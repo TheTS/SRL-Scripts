@@ -80,7 +80,7 @@ program TheMayorsVEBMiner;
    are easier to interpret throughout the script.
 }
 const
-  REVISION = 17;
+  REVISION = 17.0;
   MOUSE_RANDOM = 99;
 
 { Integers }
