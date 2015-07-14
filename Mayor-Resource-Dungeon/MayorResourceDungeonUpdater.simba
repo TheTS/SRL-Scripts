@@ -1,0 +1,37 @@
+program MayorUpdater;
+{$i srl-6/srl.simba}
+
+(* Auto-Updater file:
+
+      Run to get latest version of the script.
+      The script will appear in the same directory as this script.
+                                                                          *)
+const
+  REVISION = 0.0;
+  REPO = 'Mayor-Resource-Dungeon';
+  SCRIPT_NAME = 'MayorResourceDungeon.simba';
+
+procedure getUpdate();
+var
+  newFile: Integer;
+  newRev: Extended;
+begin
+  newRev := strToFloat(getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/' + REPO + '/master/version.txt'));
+  printf('Current script revision: %f || Online script revision: %f', [REVISION, newRev]);
+
+  if newRev > REVISION then
+  begin
+    printf('Updating script from revision %f to %f', [REVISION, newRev]);
+    print('Please reopen this file');
+    newFile := rewriteFile(scriptPath + SCRIPT_NAME, false);
+    writeFileString(newFile, getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/' + REPO + '/master/' + SCRIPT_NAME));
+    closeFile(newFile);
+    terminateScript();
+  end;
+end;
+
+begin
+  clearDebug();
+  disableSRLLog := True;
+  getUpdate();
+end.

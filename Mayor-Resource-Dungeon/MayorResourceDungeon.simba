@@ -1,0 +1,454 @@
+program MayorResourceDungeon;
+{$DEFINE SMART}
+{$i srl-6/srl.simba}
+{$i sps/lib/sps-rs3.simba}
+{$i srl-6/lib/misc/srlplayerform.simba}
+                         (* Last updated: 26.JUNE.2015 *)
+                         (*         Press Play        *)
+const
+  REVISION = 14.0;
+
+type
+  B_Enum = (B_SILVER, B_COAL, B_MITHRIL, B_BAG, B_FILLED, B_DEBUG);
+  I_Enum = (I_SILVER, I_COAL, I_MITHRIL, I_LOADS, I_BREAK, I_BREAK_D);
+
+type TMSObject = record    // Type to hold colour, sps coords, and overtext of objects
+  ID: Byte;
+  coords: TPoint;
+  overText: TStringArray;
+  colours: T2DColorData;
+  maxWait, bitmap: Integer;
+end;
+
+var
+  Silver, Coal, Mithril, Deposit: TMSObject;
+  OldValues, NewValues: Array [0..3] of Integer;
+  StatsTimer, FailTimer: TTimeMarker;
+
+procedure TMSObject.init(_ID: Byte; _maxWait: Integer; _coords: TPoint; _overText: TStringArray; _colours: T2DColorData; _hasBMP: Boolean; _string: String);
+begin
+  self.ID       := _ID;
+  self.maxWait  := _maxWait;
+  self.coords   := _coords;
+  self.overText := _overText;
+  self.colours  := _colours;
+  if _hasBMP then self.bitmap := bitmapFromString(4, 4, _string);
+end;
+                          // Creating Mainscreen objects (TMSObjects)
+procedure initObjects();
+begin    //ID, MaxWait, SPS coords, OverText,   2 x Colours [Col, Tol, [Hue, Sat, Sens]],                                       HasBMP, BMPString
+  Silver.init( 0, 4,  [174, 174], ['ilver'],  [[4808543, 7, [2, [0.14, 0.15, 0.00]]], [11847142, 20, [2, [0.28, 2.50, 0.00]]]], True,  'meJzraW1tqatjYmDQlOftaW0FMpBRdloaEAEZYUFBMRERxXl5AAf9CtM=');
+  Coal.init(   1, 11, [222, 174], ['oal'],    [[1005427, 5, [2, [0.18, 2.16, 0.00]]], [1579546,   4, [2, [0.00, 0.47, 0.00]]]], True,  'meJyTVlaWBiMmBgY4A8KGMIQlJSFsXkFBIAIAXmIDVw==');
+  Mithril.init(2, 22, [146, 170], ['ithr'],   [[1005427, 5, [2, [0.18, 2.16, 0.00]]], [8410966,  15, [2, [0.03, 0.29, 0.00]]]], True,  'meJzzNzVlYmBARjYaGkAEZBgqKpipqNhpaQLZlmpqzrq6/qamAGSlBTw=');
+  Deposit.init(4, 0,  [122, 146], ['eposit'], [[3956852, 3, [2, [0.10, 0.25, 0.00]]], [6847367,   5, [2, [0.18, 0.22, 0.00]]]], False, '');
+end;
+
+procedure freeObjects();
+begin
+  freeBitmaps([Silver.bitmap, Coal.bitmap, Mithril.bitmap]);
+end;
+
+procedure initPlayerForm();
+begin
+  playerForm.name := 'MayorResourceDungeon';
+  playerForm.editBoxLabels := ['Break after', 'Break for'];
+  playerForm.editBoxDefaults := ['60', '5'];
+  playerForm.editBoxHints := ['Minutes to play before break', 'Minutes to break for'];
+  playerForm.checkBoxLabels := ['Mine Silver', 'Mine Mithril', 'Using Coal Bag', 'Enable Debug'];
+  playerForm.checkBoxDefaults := ['False', 'False', 'False', 'False'];
+  playerForm.checkBoxHints := ['Mining Silver?', 'Mining Mithril?', 'Using Coal Bag?', 'Enable Debug?'];
+end;
+
+procedure declarePlayers();
+begin
+  players.setup(playerForm.players);
+  currentPlayer := 0;
+  players[0].integers[Ord(I_BREAK)] := strToInt(playerForm.players[0].settings[0]) * 60000;
+  players[0].integers[Ord(I_BREAK_D)] := strToInt(playerForm.players[0].settings[1]) * 60000;
+  players[0].booleans[Ord(B_SILVER)] := strToBool(playerForm.players[0].settings[2]);
+  players[0].booleans[Ord(B_COAL)] := True;
+  players[0].booleans[Ord(B_MITHRIL)] := strToBool(playerForm.players[0].settings[3]);
+  players[0].booleans[Ord(B_BAG)] := strToBool(playerForm.players[0].settings[4]);
+  players[0].booleans[Ord(B_DEBUG)] := strToBool(playerForm.players[0].settings[5]);
+end;
+
+procedure loginPlayer();
+begin
+  players[currentPlayer].login();
+  wait(randomRange(4000, 6000));
+  minimap.clickCompass();
+  mainscreen.setAngle(MS_ANGLE_HIGH);
+  exitTreasure();
+  closePopup();
+  mainScreen.setZoom(true);
+end;
+
+procedure takeBreak();
+var
+  time: Integer;
+begin           // Just using SRL's built-in 'worked' timer for the break timer
+  if (players[currentPlayer].worked.getTime() > players[currentPlayer].integers[Ord(I_BREAK)]) then
+  begin
+    time := round(players[currentPlayer].integers[Ord(I_BREAK_D)] * 0.1); // Add +/- 10% to break time
+    time := players[currentPlayer].integers[Ord(I_BREAK_D)] + random(-time, time);
+    writeLn('Taking a ' + toStr(round(time / 60000, 2)) + ' minute break');
+    players[currentPlayer].exitToLobby();
+    mouseOffClient(OFF_CLIENT_RANDOM);
+    sleep(time);
+    loginPlayer();
+    players[currentPlayer].worked.start();
+    FailTimer.start();
+  end;
+end;
+
+procedure sendStats();
+var
+  c, i: Integer;
+  calcValues: Array [0..3] of Integer;
+begin
+  if (StatsTimer.getTime() < 300000) then exit();
+
+  c := initializeHTTPClient(false);
+
+  addPostVariable(c, 'Time', intToStr(NewValues[0]));
+  addPostVariable(c, 'Nickname', players[currentPlayer].nickname);
+  addPostVariable(c, 'Silver', intToStr(NewValues[1]));
+  addPostVariable(c, 'Coal', intToStr(NewValues[2]));
+  addPostVariable(c, 'Mithril', intToStr(NewValues[3]));
+  addPostVariable(c, 'Revision', floatToStr(REVISION));
+
+  if (pos('true', lowercase(postHTTPPageEx(c, 'http://srlmayor.com/mayorstats/resourcedung/UpdateStats.php'))) <> 0) then
+  begin
+    calcValues := [round(getTimeRunning() / 60000),
+                   players[currentPlayer].integers[Ord(I_SILVER)],
+                   players[currentPlayer].integers[Ord(I_COAL)],
+                   players[currentPlayer].integers[Ord(I_MITHRIL)]];
+
+    for i := 0 to high(calcValues) do
+    begin
+      NewValues[i] := calcValues[i] - OldValues[i];
+      OldValues[i] := calcValues[i];
+    end;
+
+  end;
+
+  freeHTTPClient(c);
+  StatsTimer.start();
+end;
+
+procedure getUpdate();
+var
+  newFile: Integer;
+  newRev: Extended;
+begin
+  newRev := strToFloat(getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/SRLTheMayor/Mayor-Resource-Dungeon/master/version.txt'));
+  printf('Current script revision: %f || Online script revision: %f', [REVISION, newRev]);
+
+  if newRev > REVISION then
+  begin
+    printf('Updating script from revision %f to %f', [REVISION, newRev]);
+    newFile := rewriteFile(scriptPath + 'MayorResourceDungeon.simba', false);
+    writeFileString(newFile, getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/SRLTheMayor/Mayor-Resource-Dungeon/master/MayorResourceDungeon.simba'));
+    closeFile(newFile);
+    print('Please reopen this file');
+    terminateScript();
+  end;
+end;
+
+procedure getMap();
+var
+  itemFile: LongInt;
+begin
+  if fileExists(appPath + 'Includes/SPS/img/runescape_other/RESOURCE_DUNG_MINE.png') then exit();
+  closeFile(createFile(appPath + 'Includes/SPS/img/runescape_other/RESOURCE_DUNG_MINE.png'));
+  itemFile := reWriteFile(appPath + 'Includes/SPS/img/runescape_other/RESOURCE_DUNG_MINE.png', false);
+  writeFileString(itemFile, getPage('http://i.imgur.com/Wq7l9lZ.png'));
+  closeFile(itemFile);
+end;
+
+procedure TMSObject.walkTo();
+begin
+  if not isLoggedIn() then exit();
+  if not SPS.walkToPos(self.coords) then sps.blindWalk(self.coords);
+end;
+
+function TMSObject.find(hoverNext: Boolean = false): Boolean;
+var
+  i, next, x, y: Integer;
+  TPAs, ATPA: T2DPointArray;
+begin
+  setLength(TPAs, length(self.colours));
+
+  for i := 0 to high(self.colours) do // Look for both TMSObject colours
+  begin                               // Store each result in it's own TPA
+    self.colours[i].gatherIn(TPAs[i], mainScreen.getBounds());
+    mainscreen.filterPointsPlayer(TPAs[i]);
+    if (length(TPAs[i]) < 1) then exit(false);
+  end;
+
+  ATPA := TPAs[high(self.colours)].cluster(15); // Create ATPA from second colour's TPA only
+  if (length(ATPA) < 1) then exit(false);
+  ATPA.sortFromMidPoint(mainScreen.playerPoint);
+
+  if hoverNext then next := 1; // Start index at 1 if hovering second closest rock (next rock)
+
+  for i := next to high(ATPA) do
+    if TPAs[0].isPointNear(middleTPA(ATPA[i]), 15) then // Check if first TPA is near the ATPA[i] TPA
+    begin                                               // (i.e. Both colours are found within 15px of each other).
+      mouse(ATPA[i].getBounds().getRandomPoint());
+
+      if isMouseOverText(self.overText) then
+        if hoverNext then
+          exit(true)
+        else if (random(4) <> 0) then          // 75% chance of left click
+        begin
+          getMousePos(x, y);
+          result := multiClick([x, y], 15, 3); // If left click, 15% chance to multi-click
+          smallRandomMouse();
+          break();
+        end else
+        begin
+          fastClick(MOUSE_RIGHT);
+          if chooseOption.select(self.overText) then
+          begin
+            smallRandomMouse();
+            exit(true);
+          end;
+        end;
+    end;
+end;
+
+function waitForOre(nextRock: TMSObject; minShift, maxTime: Integer): Boolean;
+var
+  count: Integer := tabBackpack.count();
+  timer: TTimeMarker;
+  p: TPoint;
+begin
+  timer.start();
+  minimap.waitPlayerMoving();
+
+  if ((not players[currentPlayer].booleans[Ord(B_BAG)]) and (tabBackpack.count() >= 27)) or
+     (players[currentPlayer].booleans[Ord(B_FILLED)] and (tabBackpack.count() >= 27)) then
+  begin
+    SPS_PosToMM([127, 147], sps.getPlayerPos(), p); // Hover mouse on depositBox (on MM) if 27 ore in inv
+    if (p.x <> -1) then mouse(p, MOUSE_MOVE);
+  end else
+    nextRock.find(true);   // Hover the mouse on the next rock before we wait for ore
+
+  repeat
+    wait(250);
+    if (tabBackpack.count() <> count) then exit(true);
+  until (getPixelShiftAverage(mainscreen.playerBox, 100, 700) < minShift) or (timer.getTime() > maxTime);
+end;
+
+function getCoalBagSlot(): Integer;
+var
+  x, y: Integer;
+  coalBag: Integer := BitmapFromString(6, 6, 'meJzLKK6QN3RTNPVu6JtS1zMJiPKq6ytau5snTm/sn+qRWM/EwGASXGYRUdc2ZXZMS2dQWRVQBIiS+6dkz1qQOmk6XMQ9LSu0uj6kss4nr8glKQ0oYhlVbx3XapfYDWSYBJUAALNDJo4=');
+begin
+  result := -1;
+  if findBitmapToleranceIn(coalBag, x, y, tabBackpack.getBounds(), 15) then
+  begin
+    result := tabBackpack.pointToSlot([x, y]);
+    {$IFDEF SMART}smartImage.drawBox(tabBackpack.getSlotBox(result));{$ENDIF}
+  end;
+  freeBitmap(coalBag);
+end;
+
+function useCoalBag(chooseOpt: TStringArray): Boolean
+var
+  slot: Integer;
+begin
+  if players[currentPlayer].booleans[Ord(B_BAG)] and players[currentPlayer].booleans[Ord(B_COAL)] then
+  begin
+    if tabBackpack.waitWhileLocked(5000) then wait(random(1000, 1500));
+    slot := getCoalBagSlot();
+
+    if (slot <> -1) then
+    begin
+      tabBackpack.mouseSlot(slot, MOUSE_RIGHT);
+      chooseOption.select(chooseOpt);
+      players[currentPlayer].booleans[Ord(B_FILLED)] := not players[currentPlayer].booleans[Ord(B_FILLED)];
+      if tabBackpack.waitForShift(3500) then exit(true);
+    end;
+  end;
+end;
+
+procedure TMSObject.mine(maxWait: Integer);
+label
+  startMine;
+var
+  fiveTimer, timer: TTimeMarker;
+begin
+  fiveTimer.start();
+  timer.start();
+  if tabBackpack.isFull() then exit();
+
+  if self.ID = 2 then
+    if not sps.isInBox([112, 138, 164, 186]) then
+      self.walkTo(); // To prevent mining mith in the east room
+
+  startMine:
+  repeat
+    if not isLoggedIn() then exit();
+
+    if not self.find() then
+      self.walkTo()         // Too easy haha
+    else begin
+      timer.start();
+      if waitForOre(self, 150, (self.maxWait * 1000) + random(6000)) then FailTimer.start();
+    end;
+
+    claimTicket();
+    closePopup();
+  until tabBackpack.isFull() or (fiveTimer.getTime() > 360000) or (timer.getTime() > maxWait);
+
+  if (not players[currentPlayer].booleans[Ord(B_FILLED)]) then
+    if (tabBackpack.countBitmap(Coal.bitmap, 15) > 0) then
+      if useCoalBag(['ill']) then goto startMine; // Start mining again if filled coal bag
+
+end;
+
+procedure depositOre();
+label
+  startDeposit;
+var
+  timer: TTimeMarker;
+  slots: TIntegerArray := [1..28];
+begin
+  if not isLoggedIn() then exit();
+
+  if players[currentPlayer].booleans[Ord(B_BAG)] then
+    slots.deleteIndex(getCoalBagSlot() - 1);  // To remove the coalbag slot from
+                                              // the array so we don't deposit it
+  timer.start();
+
+  players[currentPlayer].integers[Ord(I_SILVER)] += tabBackpack.countBitmap(Silver.bitmap, 18);
+  players[currentPlayer].integers[Ord(I_MITHRIL)] += tabBackpack.countBitmap(Mithril.bitmap, 18);
+
+  startDeposit:
+  players[currentPlayer].integers[Ord(I_COAL)] += tabBackpack.countBitmap(Coal.bitmap, 18);
+
+  repeat
+    if depositBox.isOpen() then
+      break()
+    else
+      smallRandomMouse();
+
+    if not deposit.find() then deposit.walkTo(); // Too easy haha
+  until (timer.getTime() > 30000);
+
+  if depositBox.isOpen() then
+  begin
+    timer.start();
+
+    if (depositBox.count() > 0) then
+    repeat
+      if not players[currentPlayer].booleans[Ord(B_BAG)] then
+        depositBox.quickDeposit(QUICK_DEPOSITBOX_INVENTORY)
+      else
+        depositBox.deposit(slots);
+
+      smallRandomMouse();
+    until (depositBox.count() <= 3) or (timer.getTime() > 30000);
+
+    depositBox.close();
+
+    if players[currentPlayer].booleans[Ord(B_FILLED)] then
+      if useCoalBag(['raw-many']) then
+        goto startDeposit;  // Go back to the top to deposit the second load
+
+    players[currentPlayer].integers[Ord(I_LOADS)] += 1;
+  end;
+end;
+
+procedure progressReport();
+var
+  oreMined: Integer := 0;
+  i, orePerHour: Integer;
+begin
+  clearDebug();
+
+  for i := 0 to 2 do
+    oreMined += players[currentPlayer].integers[i];
+
+  orePerHour := round((oreMined * 60) / (getTimeRunning() / 60000));
+
+  writeLn('|=========================================|');
+  writeLn(PadR('|        Mayor Resource Dungeon v' + toStr(REVISION), 42) + '|');
+  writeLn(PadR('| Time: ' + timeRunning(TIME_ABBREV), 42) + '|');
+  writeLn(PadR('| Ore Mined: ' + toStr(oreMined) + ' (' + toStr(orePerHour) + ' PH)', 42) + '|');
+  writeLn(PadR('| Silver: ' + toStr(players[currentPlayer].integers[Ord(I_SILVER)]), 42) + '|');
+  writeLn(PadR('| Coal: ' + toStr(players[currentPlayer].integers[Ord(I_COAL)]), 42) + '|');
+  writeLn(PadR('| Mithril: ' + toStr(players[currentPlayer].integers[Ord(I_MITHRIL)]), 42) + '|');
+  writeLn(PadR('| Loads Done: ' + toStr(players[currentPlayer].integers[Ord(I_LOADS)]), 42) + '|');
+  writeLn(PadR('| Coal bag: ' + toStr(players[currentPlayer].booleans[Ord(B_BAG)]), 42) + '|');
+  writeLn(PadR('| Break in: ' + msToTime(players[currentPlayer].integers[Ord(I_BREAK)] - players[currentPlayer].worked.getTime(), TIME_ABBREV), 42) + '|');
+  writeLn('|=========================================|');
+end;
+
+procedure mainLoop();
+begin
+  {$IFDEF SMART}smartImage.clear();{$ENDIF}
+
+  case tabBackpack.isFull() of
+    true: depositOre();
+    false:begin
+            if players[currentPlayer].booleans[Ord(B_MITHRIL)] then
+              Mithril.mine(28000);
+            if players[currentPlayer].booleans[Ord(B_SILVER)] then
+              Silver.mine(11000);
+            Coal.mine(240000);
+          end;
+  end;
+        // Two lines of hacky antiban to tear botwatch to shreds and keep the noobs happy
+  if random(8) = 0 then hoverSkill(SKILL_MINING);
+  if players[currentPlayer].booleans[Ord(B_BAG)] and (random(15) = 0) then tabBackpack.dragSlot(getCoalBagSlot(), random(28) + 1);
+
+  progressReport();
+  sendStats();
+  takeBreak();
+
+  if (FailTimer.getTime() > 600000) then
+  begin
+    writeLn('We haven''t mined anything in 10 minutes - shutting down for safety');
+    terminateScript();
+  end;
+end;
+
+begin
+  clearDebug();
+  disableSRLLog := True;
+  getUpdate();
+  initPlayerForm();
+  runPlayerForm();
+  if not playerForm.isScriptReady then exit();
+
+  declarePlayers();
+  getMap();
+  initObjects();
+  addOnTerminate('freeObjects');
+
+  {$IFDEF SMART}
+    smartEnableDrawing := True;
+    smartShowConsole := False;
+  {$ENDIF}
+                        // So miner.srlmayor.com is not overloaded with the dreaded 'Anonymous users'
+  if players[currentPlayer].nickname = '' then
+    if inputQuery('Your player doesn''t have a nickname!', 'Please choose a nickname (used for stats only):', players[currentPlayer].nickname) then
+      showMessage('Please set a nickname in the Player Manager to prevent this showing again')
+    else
+      players[currentPlayer].nickname := 'Anonymous users';
+
+  disableSRLDebug := not players[currentPlayer].booleans[Ord(B_DEBUG)];
+  setupSRL();
+  sps.setup('RESOURCE_DUNG_MINE', RUNESCAPE_OTHER);
+  players[currentPlayer].worked.start();
+  StatsTimer.start();
+  FailTimer.start();
+
+  repeat
+    if not isLoggedIn() then loginPlayer();
+    mainLoop();
+  until (players.getActive() < 1);
+end.
