@@ -3,10 +3,10 @@ program MayorResourceDungeon;
 {$i srl-6/srl.simba}
 {$i sps/lib/sps-rs3.simba}
 {$i srl-6/lib/misc/srlplayerform.simba}
-                         (* Last updated: 26.JUNE.2015 *)
+                         (* Last updated: 14.JULY.2015 *)
                          (*         Press Play        *)
 const
-  REVISION = 14.0;
+  REVISION = 15.0;
 
 type
   B_Enum = (B_SILVER, B_COAL, B_MITHRIL, B_BAG, B_FILLED, B_DEBUG);
@@ -141,14 +141,14 @@ var
   newFile: Integer;
   newRev: Extended;
 begin
-  newRev := strToFloat(getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/SRLTheMayor/Mayor-Resource-Dungeon/master/version.txt'));
+  newRev := strToFloat(getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/master/Mayor-Resource-Dungeon/version.txt'));
   printf('Current script revision: %f || Online script revision: %f', [REVISION, newRev]);
 
   if newRev > REVISION then
   begin
-    printf('Updating script from revision %f to %f', [REVISION, newRev]);
+    printf('Updating MayorResourceDungeon.simba from revision %f to %f', [REVISION, newRev]);
     newFile := rewriteFile(scriptPath + 'MayorResourceDungeon.simba', false);
-    writeFileString(newFile, getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/SRLTheMayor/Mayor-Resource-Dungeon/master/MayorResourceDungeon.simba'));
+    writeFileString(newFile, getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/master/Mayor-Resource-Dungeon/MayorResourceDungeon.simba'));
     closeFile(newFile);
     print('Please reopen this file');
     terminateScript();
