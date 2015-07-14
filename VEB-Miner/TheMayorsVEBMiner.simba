@@ -1,0 +1,1524 @@
+program TheMayorsVEBMiner;
+{$DEFINE SMART} // <--- Delete this line to not use SMART
+
+{$i srl-6/srl.simba}
+{$i sps/lib/sps-rs3.simba}
+{$i srl-6/lib/misc/srlplayerform.simba}
+ const
+(*                                                               .
+       .---. .-. .-..----.   .-.   .-.  .--..-.  .-..----. .----.|\.----.
+      {_   _}| {_} || {_     |  `.'  | / {} \\ \/ //  {}  \| {}  }{ {__
+        | |  | { } || {__    | |\ /| |/  /\  \}  { \      /| .-. \.-._} }
+        `-'  `-' `-'`----'   `-' ` `-'`-'  `-'`--'  `----' `-' `-'`----'
+
+           .-. .-..----..----.    .-.   .-..-..-. .-..----..----.
+           | | | || {_  | {}  }   |  `.'  || ||  `| || {_  | {}  }
+           \ \_/ /| {__ | {}  }   | |\ /| || || |\  || {__ | .-. \
+            `---' `----'`----'    `-' ` `-'`-'`-' `-'`----'`-' `-'
+
+                      Completed: 16th April 2014 for the LOLs
+                             Updated: 7 July 2015
+
+
+                                  REVISION 17
+                                 ------------
+
+                       Press play and fill in the form
+                      ---------------------------------
+
+                                                                              *)
+
+(* Colour & Area Constants *)
+
+{ Iron Ore }
+  IRON_COLOUR = 2242428;
+  IRON_TOL = 8;
+  IRON_HUE = 0.09;
+  IRON_SAT = 0.33;
+
+{ Tin Ore }
+  TIN_COLOUR = 10853037;
+  TIN_TOL = 19;
+  TIN_HUE = 0.39;
+  TIN_SAT = 0.33;
+
+{ Copper Ore }
+  COPPER_COLOUR = 5278153;
+  COPPER_TOL = 11;
+  COPPER_HUE = 0.20;
+  COPPER_SAT = 0.86;
+
+{ Bank booth in VEB }
+  BOOTH_COLOUR = 5731714;
+  BOOTH_TOL = 9;
+  BOOTH_HUE = 0.09;
+  BOOTH_SAT = 1.00;
+
+{ Banker NPC in VEB (purple ones) }
+  BANKER_COLOUR = 5517369;
+  BANKER_TOL = 12;
+  BANKER_HUE = 0.20;
+  BANKER_SAT = 0.48;
+
+{ SPS area coords }
+  VEM_MINE_BOX: Tbox = [380, 330, 442, 393];
+  VEB_BOX: TBox = [270, 130, 304, 152];
+
+{ Other constants }
+  MIN_PIXEL_SHIFT = 100;// Minimum player pixel shift while mining (only adjust if necessary)
+  MINE_TIMER = 15000;   // Max time to wait for rocks (only adjust if necessary)
+
+
+(* -------------------------------------------------------------------------- *)
+(*                       DON'T TOUCH ANYTHING BELOW                           *)
+(*                   (unless you know what you're doing)                      *)
+(* -------------------------------------------------------------------------- *)
+
+(* Internal Constants *)
+{
+   These are used so TPlayers integers/booleans (i.e. players.integers[0] etc.)
+   are easier to interpret throughout the script.
+}
+const
+  REVISION = 17;
+  MOUSE_RANDOM = 99;
+
+{ Integers }
+  I_LOGIN_WORLD    = 0;
+  I_LOADS_TO_DO    = 1;
+  I_SEARCH_RADIUS  = 2;
+  I_BREAK_TIME     = 3;
+  I_BREAK_DURATION = 4;
+  I_SWITCH_AFTER   = 5;
+  I_LOADS_DONE     = 6;
+  I_XP_GAINED      = 7;
+  I_ORES_MINED     = 8;
+  I_GEMS_FOUND     = 9;
+  I_PROFIT         = 10;
+  I_RECOVERIES     = 11;
+  I_TOTAL_BREAKS   = 12;
+
+{ Booleans }
+  B_MINE_IRON      = 0;
+  B_MINE_TIN       = 1;
+  B_MINE_COPPER    = 2;
+  B_DO_14_OF_EACH  = 3;
+  B_POWER_MINING   = 4;
+  B_SPS_ANY_ANGLE  = 5;
+  B_ENABLE_DEBUG   = 6;
+  B_DROP_GEMS      = 7;
+
+{ Strings }
+  S_REASON = 0;
+
+
+(* Custom Types *)
+type TRock = record
+  name: String;
+  overText: TStringArray;
+  colour, tol, price, ID: Integer;
+  hue, sat: Extended;
+end;
+
+(* Global Variables *)
+var
+{ SPS Areas & Paths }
+  Varrock: TSPSArea;
+  PathToBank, PathToMine, FailSafeToMine: TPointArray;
+
+{ DTMs and Bitmaps }
+  GemsDTM : Integer;
+  OreDTMs: Array [0..2] of Integer;
+  PopupDTM: Integer;
+
+{ Rock Variables }
+  Hues, Sats: Array [0..2] of Extended;
+  AllRocks: Array [0..2] of TRock;
+  PlayerRocks: Array of Array of TRock;
+
+{ Global Timers }
+  RockTimer, StatsTimer: TTimeMarker;
+  TotalBreakTime: Array of TTimeMarker;
+  SwitchTime: Integer;
+
+{ Proggy Stats }
+  OresMined: Array of Array [0..2] of Integer;
+  MiningLevel: Array of Integer;
+  BreakTime: Integer;
+
+{ Stats Tracking Variables }
+  NewValues, OldValues: Array [0..6] of Integer;
+  TotalStats: Array [0..5] of Integer;
+
+procedure getUpdate();
+var
+  newFile: Integer;
+  newRev: Extended;
+begin
+  newRev := strToFloat(getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/master/VEB-Miner/version.txt'));
+  printf('Current script revision: %f || Online script revision: %f', [REVISION, newRev]);
+
+  if newRev > REVISION then
+  begin
+    printf('Updating MayorResourceDungeon.simba from revision %f to %f', [REVISION, newRev]);
+    newFile := rewriteFile(scriptPath + 'TheMayorsVEBMiner.simba', false);
+    writeFileString(newFile, getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/master/VEB-Miner/TheMayorsVEBMiner.simba'));
+    closeFile(newFile);
+    print('Please reopen this file');
+    terminateScript();
+  end;
+end;
+
+procedure initPlayerForm();
+begin
+  with playerForm do
+  begin
+    name := 'The Mayor''s VEB Miner';
+    scriptHelpThread := 'https://villavu.com/forum/showthread.php?t=108775';
+
+    editBoxLabels := ['Login World', 'Loads To Do', 'Search Radius', 'Time Until Break', 'Break Duration', 'Switch Players After'];
+    editBoxDefaults := ['-1', '1000', '280', '60', '10', '180'];
+    editBoxHints := ['Leave -1 to just click play', 'Stop using player after how many loads?', 'Distance from player look for rocks (280px is full screen)', 'Play time before break (minutes)', 'Break duration (minutes)', 'Play time before switching player (minutes)'];
+
+    checkBoxLabels := ['Iron', 'Tin', 'Copper', '14 Tin and 14 Copper', 'Power Mining', 'Drop Gems', 'Use SPS AnyAngle', 'Enable debug'];
+    checkBoxDefaults := ['True', 'False', 'False', 'true', 'False', 'False', 'False', 'False'];
+    checkBoxHints := ['Mining Iron Rocks?', 'Mining Tin Rocks?', 'Mining Copper Rocks?', 'If mining tin and copper, mine 14 of each, before banking?', 'Are you powermining (dropping ore)?', 'Drop any gems you collect when powermining?', 'Enable to walk at any compass angle (may be buggy)', 'Display debug on SMART and in the debug box'];
+  end;
+end;
+
+procedure declarePlayers();
+var
+  i: Integer;
+begin
+  players.setup(playerForm.players);
+  currentPlayer := 0;
+
+  for i := 0 to high(players) do
+    with players[i] do
+    begin
+      integers[I_LOGIN_WORLD] := strToInt(playerForm.players[i].settings[0]);
+      integers[I_LOADS_TO_DO] := strToInt(playerForm.players[i].settings[1]);
+      integers[I_SEARCH_RADIUS] := strToInt(playerForm.players[i].settings[2]);
+      integers[I_BREAK_TIME] := strToInt(playerForm.players[i].settings[3]);
+      integers[I_BREAK_DURATION] := strToInt(playerForm.players[i].settings[4]);
+      integers[I_SWITCH_AFTER] := strToInt(playerForm.players[i].settings[5]);
+
+      booleans[B_MINE_IRON] := strToBool(playerForm.players[i].settings[6]);
+      booleans[B_MINE_TIN] := strToBool(playerForm.players[i].settings[7]);
+      booleans[B_MINE_COPPER] := strToBool(playerForm.players[i].settings[8]);
+      booleans[B_DO_14_OF_EACH] := strToBool(playerForm.players[i].settings[9]);
+      booleans[B_POWER_MINING] := strToBool(playerForm.players[i].settings[10]);
+      booleans[B_DROP_GEMS] := strToBool(playerForm.players[i].settings[11]);
+      booleans[B_SPS_ANY_ANGLE] := strToBool(playerForm.players[i].settings[12]);
+      booleans[B_ENABLE_DEBUG] := strToBool(playerForm.players[i].settings[13]);
+
+      if not booleans[B_ENABLE_DEBUG] then
+        disableSRLDebug := true;
+
+      world := integers[I_LOGIN_WORLD];
+
+      if (booleans[B_DO_14_OF_EACH] and ((not booleans[B_MINE_TIN]) or (not booleans[B_MINE_COPPER]))) or
+         (booleans[B_DO_14_OF_EACH] and booleans[B_MINE_IRON]) then
+      begin
+        writeLn('');
+        writeLn('ERROR: Player [' + toStr(i) + '] "14 of each" selected but you aren''t mining JUST tin AND copper.');
+        terminateScript();
+      end;
+    end;
+
+    setLength(TotalBreakTime, length(players));
+    setLength(OresMined, length(players));
+    setLength(PlayerRocks, length(players));
+    setLength(MiningLevel, length(players));
+end;
+
+procedure debugSPFSettings();
+var
+  i: Integer;
+begin
+  writeLn('');
+
+  for i := 0 to high(players) do
+  begin
+    writeLn('Player[' + toStr(i) + '] Settings:');
+    writeLn('Login World:         ', players[i].integers[I_LOGIN_WORLD]);
+    writeLn('Loads to do:         ', players[i].integers[I_LOADS_TO_DO] );
+    writeLn('Search radius:       ', players[i].integers[I_SEARCH_RADIUS] );
+    writeLn('Time before break:   ', players[i].integers[I_BREAK_TIME]);
+    writeLn('Break duration:      ', players[i].integers[I_BREAK_DURATION]);
+    writeLn('Switch after:        ', players[i].integers[I_SWITCH_AFTER]);
+    writeLn('Mine Iron:           ', players[i].booleans[B_MINE_IRON]);
+    writeLn('Mine Tin:            ', players[i].booleans[B_MINE_TIN]);
+    writeLn('Mine Copper:         ', players[i].booleans[B_MINE_COPPER]);
+    writeLn('14 tin and copper:   ', players[i].booleans[B_DO_14_OF_EACH]);
+    writeLn('Power mining:        ', players[i].booleans[B_POWER_MINING]);
+    writeLn('DSPS AnyAngle:       ', players[i].booleans[B_SPS_ANY_ANGLE]);
+    writeLn('Enable Debug:        ', players[i].booleans[B_ENABLE_DEBUG]);
+    writeLn('');
+  end;
+end;
+
+procedure debug(text: String);
+begin
+  if players[currentPlayer].booleans[B_ENABLE_DEBUG] then writeLn(text);
+end;
+
+procedure paintStatus(status: String);
+begin
+  {$IFDEF SMART}
+  try
+    smartImage.clear();
+    smartImage.drawText('Status: ' + status, point(chatbox.x2 - 320, chatbox.y2 - 19), smallChars, false, 255);
+  except
+  end;
+  {$ENDIF}
+end;
+
+procedure paintDebug(what: String; ATPA: T2DPointArray = []; shift: String = '');
+begin
+  {$IFDEF SMART}
+  if players[currentPlayer].booleans[B_ENABLE_DEBUG] then
+  try
+    case lowercase(what) of
+      'atpa': smartImage.debugATPA(ATPA);
+      'circle': smartImage.drawCircle(mainscreen.playerPoint, I_SEARCH_RADIUS, false, clRed);
+      'box': smartImage.drawBox(mainScreen.playerBox, false, clWhite);
+      'clear': smartImage.clearArea(mainScreen.getBounds());
+      'shift':begin
+                smartImage.clearArea([274, 160, 305, 174]);
+                smartImage.drawText(shift, point(277, 160), 'SmallChars', true, 255);
+              end;
+    end;
+  except
+  end;
+  {$ENDIF}
+end;
+
+function _taskPopupVisible(var p: TPoint): Boolean;
+var
+  x, y: Integer;
+begin
+  result := findDTM(PopUpDTM, x, y, mainScreen.getBounds());
+  if result then p := [x + 7, y + 7];
+end;
+
+function closeTaskPopup(): Boolean;
+var
+  p: TPoint;
+begin
+  if MiningLevel[currentPlayer] < 50 then
+    if _taskPopupVisible(p) then
+    begin
+      mouse(p.rand(3), MOUSE_LEFT);
+      wait(randomRange(1500, 2500));
+      result := not _taskPopupVisible(p);
+    end;
+end;
+
+function randomClick(RClickChance: Integer; chooseOptions: TStringArray): Boolean;
+var
+  x, y: Integer;
+begin
+  if random(RClickChance) = 0 then
+  begin
+    fastClick(MOUSE_RIGHT);
+    result := chooseOption.select(chooseOptions);
+  end else
+  begin
+    getMousePos(x, y);
+    result := multiClick([x, y], 10, 3);
+  end;
+end;
+
+procedure randomMouse(chance: Integer; sleep: Boolean = false; min, max: Integer = 0);
+begin
+  if random(chance) = 0 then
+    if sleep then
+      sleepAndMoveMouse(randomRange(min, max))
+    else
+      smallRandomMouse();
+end;
+
+function isPlayerMoving(minShift: Integer): Boolean;
+var
+  shift: Integer;
+begin
+  paintDebug('box');
+  shift := getPixelShiftAverage(mainscreen.playerBox, 150, 700);
+  result := shift > minShift;
+  debug('Player pixel shift: ' + toStr(shift));
+  paintDebug('shift', [], toStr(shift));
+end;
+
+function waitPackMoving(minShift, maxTime: Integer): Boolean;
+var
+  count: Integer;
+  t: TTimeMarker;
+begin
+  count := tabBackpack.count();
+
+  wait(randomRange(600, 800));
+  t.start();
+
+  repeat
+    wait(250);
+    randomMouse(8);
+    randomMouse(12, true, 500, 4000);
+
+    if tabBackpack.count() <> count then
+    begin
+      paintDebug('clear');
+      exit(true);
+    end;
+  until (not isPlayerMoving(minShift)) or (t.getTime() > maxTime);
+
+end;
+
+procedure packManagement();
+var
+  x, y, i, gemSlot, freeSlot: Integer;
+begin
+
+  for i := 28 downto 1 do
+    if not tabBackPack.isItemInSlot(i) then
+    begin
+      freeSlot := i;
+      break();
+    end;
+
+  for i := 1 to 28 do
+    if findDTM(GemsDTM, x, y, tabBackPack.getSlotBox(i)) then
+      if players[currentPlayer].booleans[B_DROP_GEMS] then
+      begin
+        tabBackpack.mouseSlot(i, MOUSE_RIGHT);
+        chooseOption.select(['rop']);
+        randomMouse(2, true, 500, 2500);
+      end else
+      begin
+        gemSlot := i;
+        break();
+      end;
+
+  if gemSlot < freeSlot then
+    tabBackPack.dragSlot(gemSlot, freeSlot);
+
+end;
+
+procedure antiBan(ran: Integer; walking: Boolean = false);
+var
+  i: Integer;
+begin
+  i := random(ran);
+
+  if i < 73 then
+  begin
+    paintStatus('Engaging in antiban');
+
+    case i of
+      0..4: boredHuman(false);
+      5..20: begin
+               MiningLevel[currentPlayer] := tabStats.getSkillLevel(SKILL_MINING);
+               hoverSkill(SKILL_MINING);
+               wait(gaussRangeInt(1500,5000));
+             end;
+      21..23: mouseMovingObject();
+      24..34: sleepAndMoveMouse(randomRange(100,6000));
+      35..45: begin
+                mouseOffClient(random(4));
+                wait(randomRange(2000, 15000));
+              end;
+      46..50: wait(randomRange(1000, 2000));
+      51..55: randomCameraAngle(MS_ANGLE_HIGH);
+      56..63: pickUpMouse();
+      63..66: hoverRandomSkill();
+      67..72: packManagement();
+    end;
+
+    if walking then
+    begin
+      minimap.setAngle(MM_DIRECTION_NORTH, true);
+      paintStatus('Continuing to walk');
+    end;
+  end;
+end;
+
+function TSPSArea.walkPath(path: TPointArray; waitMoving: Boolean = True; shiftInterval: Integer = 500): Boolean; override;
+var
+  p, lastPos, mmPoint: TPoint;
+  t, fails, h, l, i: Integer;
+begin
+  result := false;;
+
+  h := high(path);
+  l := low(path);
+
+  t := (getSystemTime() + randomRange(15000, 20000));
+
+  repeat
+    if (not isLoggedIn()) then
+      exit(false);
+
+    p := self.getPlayerPos();
+
+    for i := h downto l do
+      if (SPS_PosToMM(path[i], p, mmPoint)) then
+      begin
+        if (distance(minimap.getCenterPoint(), mmPoint) >= 10) then
+        begin
+          if (spsMultiMouse) then
+            multiClick(mmPoint, 25, 3)
+          else
+            mouse(mmPoint, MOUSE_LEFT);
+
+          if (minimap.isFlagPresent(2500 + random(500))) then
+            minimap.waitFlag(10 + random(25));
+        end;
+
+        t := (getSystemTime() + randomRange(15000, 20000));
+
+        result := (i = h) or (distance(path[i], path[h]) < 10);
+
+        if (result) then
+          break(2)
+        else
+          break();
+
+      end;
+
+    if (p.x = lastPos.x) and (p.y = lastPos.y) then
+      inc(fails);
+
+    lastPos := p;
+
+    randomMouse(10);
+    antiBan(750, true);
+
+  until (getSystemTime() > t) or (fails > 5);
+
+  if (minimap.isFlagPresent()) or (minimap.isPlayerMoving()) then
+    minimap.waitPlayerMoving();
+
+  print(self.getName()+'.walkPath(): result = '+boolToStr(result));
+end;
+
+procedure freeTheDTMs();
+begin
+  freeDTMs([OreDTMs[0], OreDTMs[1], OreDTMs[2], GemsDTM, PopUpDTM]);
+
+end;
+
+procedure loginPlayer();
+begin
+  players[currentPlayer].login();
+  wait(randomRange(4000, 6000));
+  paintStatus('Setting up player');
+  mainscreen.setAngle(MS_ANGLE_HIGH);
+  exitTreasure();
+  claimTicket();
+  MiningLevel[currentPlayer] := tabStats.getSkillLevel(SKILL_MINING);
+  mainScreen.setZoom(true);
+end;
+
+procedure resetSwitchTimer();
+var
+  ran: Integer;
+begin
+  ran := round((players[currentPlayer].integers[I_SWITCH_AFTER] * 60000) * 0.2);
+  SwitchTime := (getSystemTime() + (players[currentPlayer].integers[I_SWITCH_AFTER] * 60000) + randomRange(-ran, ran));
+end;
+
+procedure resetBreakTimer();
+var
+  ran: Integer;
+begin
+  ran := round((players[currentPlayer].integers[I_BREAK_TIME] * 60000) * 0.2);
+  BreakTime := (getSystemTime() + (players[currentPlayer].integers[I_BREAK_TIME] * 60000) + randomRange(-ran, ran));
+end;
+
+function switchPlayers(active: Boolean): Boolean;
+begin
+  if players.getActive() < 2 then
+    exit(false);
+
+  paintStatus('Switching players');
+
+  if players.next(active) then
+  begin
+    result := true;
+    loginPlayer();
+    resetBreakTimer();
+    resetSwitchTimer();
+  end;
+end;
+
+function timeUntil(time: Integer): String;
+var
+  H, M, S: Integer;
+begin
+  convertTime((time - getSystemTime()), H, M, S);
+  result := (toStr(H)+ 'h ' + toStr(M)+ 'm ' + toStr(S)+ 's');
+end;
+
+procedure takeBreak();
+var
+  H, M, S, breakFor, timeLeft, ran: Integer;
+  breakDuration: TTimeMarker;
+begin
+  if (getSystemTime() >= BreakTime) then
+  begin
+    TotalBreakTime[currentPlayer].start();
+    paintStatus('Taking a break');
+
+    if random(2) = 0 then
+      players[currentPlayer].logout()
+    else
+      players[currentPlayer].exitToLobby();
+
+    ran := round((players[currentPlayer].integers[I_BREAK_DURATION] * 60000) * 0.2);
+
+    breakFor := (players[currentPlayer].integers[I_BREAK_DURATION] * 60000) + randomRange(ran, -ran);
+    convertTime(breakFor, H, M, S);
+    writeLn('You are breaking for: ' + toStr(H)+ 'h ' + toStr(M)+ 'm ' + toStr(S)+ 's');
+
+    breakDuration.start();
+
+    repeat
+      timeLeft := breakFor - breakDuration.getTime();
+      convertTime(timeLeft, H, M, S);
+      writeLn('Ending break in: ' + toStr(H)+ 'h ' + toStr(M)+ 'm ' + toStr(S)+ 's');
+      wait(25000 + random(4000));
+    until breakFor < breakDuration.getTime();
+
+    inc(players[currentPlayer].integers[I_TOTAL_BREAKS]);
+    resetBreakTimer();
+    TotalBreakTime[currentPlayer].pause();
+
+    loginPlayer();
+
+    rockTimer.reset();
+    rockTimer.start();
+  end;
+end;
+
+function getGEPrice(itemString: String): Integer;
+var
+  wikiaPage, priceString: String;
+begin
+  wikiaPage := getPage('http://runescape.wikia.com/wiki/Exchange:' + itemString);
+  priceString := between('GEPrice">', '</span>', wikiaPage);
+  result := strToIntDef(extractFromStr(priceString, numbers), -1);
+  writeLn(' -----> ' + itemString + ' price: '+ toStr(result));
+end;
+
+procedure checkForFile(path, url, name: String);
+var
+  itemName: String;
+  itemFile: LongInt;
+begin
+  itemName := appPath + path;
+
+  if fileExists(itemName) then
+  begin
+    writeLn(' -----> ' + name + ' already exists');
+    exit();
+  end;
+
+  writeLn(' -----> Downloading ' + name);
+  showMessage('You''re missing the ' + name + chr(13) + chr(13) + 'Downloading it now!');
+
+  closeFile(createFile(itemName));
+  itemFile := reWriteFile(itemName, false);
+  writeFileString(itemFile, getPage(url));
+  closeFile(itemFile);
+end;
+
+function isActionbarSlotEmpty(slot: Integer): Boolean;
+begin
+  result := (getColor(actionBar.__slots[slot - 1].getMiddle().x, actionBar.__slots[slot - 1].getMiddle().y) = 2761233);
+end;
+
+function clearActionBarSlot(slot: Integer): Boolean;
+var
+  i, t: Integer;
+begin
+
+  if isActionbarSlotEmpty(slot) then
+    exit(true);
+
+  paintStatus('Clearing actionbar slot');
+
+  while i < 4 do
+  begin
+    actionbar.unlock();
+    mouseBox(actionBar.getSlotBox(slot));
+    wait(randomRange(100, 300));
+    dragMouse(point(50 + random(450), 220 + random(140)));
+    t := getSystemTime() + randomRange(3000, 4000);
+    repeat
+      wait(randomRange(2000, 2500));
+      if isActionbarSlotEmpty(slot) then
+        exit(true);
+    until (getSystemTime() > t);
+    inc(i);
+  end;
+
+end;
+
+function addItemToActionBar(packSlot, actionBarSlot: Integer): Boolean;
+var
+  t, i: Integer;
+  p: TPoint;
+begin
+
+  if not tabBackPack.isItemInSlot(packSlot) then
+    exit(false);
+
+  if not isActionbarSlotEmpty(actionBarSlot) then
+    clearActionBarSlot(actionBarSlot);
+
+  paintStatus('Adding ore to actionbar');
+
+  while i < 4 do
+  begin
+    gaussBox(p, actionBar.getSlotBox(actionBarSlot));
+    mouseBox(tabBackPack.getSlotBox(packSlot));
+    wait(randomRange(200, 400));
+    dragMouse(p);
+    t := getSystemTime() + randomRange(1800, 3000);
+    repeat
+      wait(randomRange(250, 600));
+      if not isActionbarSlotEmpty(actionBarSlot) then
+        exit(true);
+    until (getSystemTime() > t);
+    inc(i);
+  end;
+
+end;
+
+procedure calculateStats();
+var
+  i, c: Integer;
+  calcValues: Array [0..6] of Integer;
+begin
+  calcValues := [round(getTimeRunning() / 1000), // Time
+                 TotalStats[0], // XP
+                 TotalStats[1], // Iron
+                 TotalStats[2], // Tin
+                 TotalStats[3], // Copper
+                 TotalStats[4], // Gems
+                 TotalStats[5]  // Profit
+                ];
+
+  for i := 0 to high(NewValues) do
+  begin
+    newValues[i] := calcValues[i] - oldValues[i];
+    oldValues[i] := calcValues[i];
+  end;
+end;
+
+function sendStats(): Boolean;
+var
+  c, i: Integer;
+  statVars: Array [0..6] of String;
+begin
+  statVars := ['Time', 'XP', 'Iron', 'Tin', 'Copper', 'Gems', 'Profit'];
+
+  c := initializeHTTPClient(false);
+
+  for i := 0 to high(statVars) do
+    addPostVariable(c, statVars[i], intToStr(newValues[i]));
+
+  result := pos('true', lowercase(postHTTPPageEx(c, 'http://srlmayor.com/mayorstats/miner/UpdateStats.php'))) <> 0;
+  freeHTTPClient(c);
+
+  if result then calculateStats();
+end;
+
+function getTotals(): TStringArray; // Original by Coh3n
+var
+  i: Integer;
+  tmp: TIntegerArray;
+begin
+  setLength(tmp, 6);
+  setLength(result, length(tmp));
+
+  for i := 0 to high(players) do
+    with players[i] do
+    begin
+      incEx(tmp[0], worked.getTime());
+      incEx(tmp[1], integers[I_XP_GAINED]);
+      incEx(tmp[2], SumIntegerArray(OresMined[i]));
+      incEx(tmp[3], integers[I_GEMS_FOUND]);
+      incEx(tmp[4], integers[I_PROFIT]);
+      incEx(tmp[5], integers[I_TOTAL_BREAKS]);
+    end;
+
+  for i := 1 to high(tmp) - 1 do
+    TotalStats[i - 1] := tmp[i];
+
+  result[0] := msToTime(tmp[0], TIME_BARE);
+
+  for i := 1 to high(tmp) do
+    result[i] := groupDigits(tmp[i], ',');
+end;
+
+function getProggyStats(stat: Integer; perHour: Boolean): String; // Original by Coh3n
+var
+  perHourTmp: Integer;
+begin
+  try
+    perHourTmp := round(stat * (3600.0 / (players[currentPlayer].worked.getTime() / 1000.0)));
+  except
+  end;
+
+  case perHour of
+    true: result := groupDigits(stat, ',') + ' (' + groupDigits(perHourTmp, ',') + ' PH)';
+    false: result := groupDigits(stat, ',');
+  end;
+end;
+
+procedure progressReport();
+var
+  i, profit, PAD_S, PAD_M: Integer;
+  totalBreaks: Extended;
+  totals: TStringArray
+begin
+
+  for i := 0 to 2 do
+      profit := profit + OresMined[currentPlayer][i] * AllRocks[i].Price;
+
+  totalBreaks := (TotalBreakTime[currentPlayer].getTime()/3600000);
+
+  with players[currentPlayer] do
+  begin
+    integers[I_XP_GAINED] := round((OresMined[currentPlayer][0] * 35) +
+                                   (OresMined[currentPlayer][1] * 17.5) +
+                                   (OresMined[currentPlayer][2] * 17.5));
+
+    integers[I_ORES_MINED] := sumIntegerArray(OresMined[currentPlayer]);
+    integers[I_PROFIT] := profit;
+  end;
+
+  clearDebug();
+
+  PAD_M := 95;
+
+  if length(players) > 1 then
+  begin
+    totals := getTotals();
+
+    writeLn(' /=============================================================================================\');
+    writeLn(PadR('||                                   The Mayor''s VEB Miner', PAD_M) + '||');
+    writeLn(PadR('||                                      - Revision ' + toStr(REVISION) + ' -', PAD_M) + '||');
+    writeLn('||=============================================================================================||');
+    writeLn(PadR('|| Time running: ' + timeRunning(), PAD_M) + '||');
+    writeLn('||------------- ---------- -------- --------- --------- ------ ---------- -------- ------------||');
+    writeLn('||   Nickname  |  Worked  | Active |   XP    |   Ore   | Gems |  Profit  | Breaks |   Reason   ||');
+    writeLn('||------------- ---------- -------- --------- --------- ------ ---------- -------- ------------||');
+
+    for i := 0 to high(players) do
+      with players[i] do
+        writeln('|| ' + padR(nickname, 12) + '| '
+                      + padR(msToTime(worked.getTime(), TIME_BARE), 3) + ' | '
+                      + padR(boolToStr(isActive), 7) + '| '
+                      + padR(groupDigits(integers[I_XP_GAINED], ','), 8) + '| '
+                      + padR(groupDigits(sumIntegerArray(OresMined[i]), ','), 8) + '| '
+                      + padR(groupDigits(integers[I_GEMS_FOUND], ','), 5) + '| '
+                      + padR(groupDigits(integers[I_PROFIT], ','), 9) + '| '
+                      + padR(groupDigits(integers[I_TOTAL_BREAKS], ','), 7) + '| '
+                      + padR(strings[S_REASON], 11) + '||');
+    writeln('||=============================================================================================||');
+    writeln(padR('|| Totals: ', 15) + '| '
+          + padR(totals[0], 9) + '| '
+          + padR('', 7) + '| '
+          + padR(totals[1], 8) + '| '
+          + padR(totals[2], 8) + '| '
+          + padR(totals[3], 5)+ '| '
+          + padR(totals[4], 9)+ '| '
+          + padR(totals[5], 7)+ '| '
+          + padR('', 11) + '||');
+    writeln(' \=============================================================================================/');
+    writeLn('');
+  end;
+
+  PAD_S := 43;
+
+  with players[currentPlayer] do
+  begin
+    writeLn(' /=========================================\');
+    writeLn(padR('||     The Mayor''s VEB Miner (Rev. ' + toStr(REVISION) + ')', PAD_S) + '||') ;
+    writeLn(padR('||', PAD_S) + '||');
+    writeLn(padR('|| Current Player: [' + toStr(currentPlayer) + '] ' + nickname, PAD_S) + '||');
+    writeLn(padR('|| Total Time: ' + msToTime(worked.getTotalTime(), TIME_ABBREV), PAD_S) + '||');
+
+    writeLn(padR('|| Ores mined: ' + getProggyStats(sumIntegerArray(OresMined[currentPlayer]),true), PAD_S) + '||');
+    writeLn(padR('|| Iron: ' + toStr(OresMined[currentPlayer][0]) + ' Tin: ' + toStr(OresMined[currentPlayer][1]) + ' Copper: ' + toStr(OresMined[currentPlayer][2]) , PAD_S) + '||');
+    writeLn(padR('|| Experience earned: ' + getProggyStats(integers[I_XP_GAINED], true), PAD_S) + '||');
+
+    if players[currentPlayer].booleans[B_POWER_MINING] then
+      writeLn(padR('|| Value of ore dropped: ' + getProggyStats(integers[I_PROFIT], false), PAD_S) + '||')
+    else
+    writeLn(padR('|| Profit made: ' + getProggyStats(integers[I_PROFIT], true), PAD_S) + '||');
+
+    writeLn(padR('|| Gems found: ' + getProggyStats(integers[I_GEMS_FOUND], false), PAD_S) + '||') ;
+    writeLn(padR('|| Loads done: ' + toStr(players[currentPlayer].integers[I_LOADS_DONE]) + ' of ' + toStr(players[currentPlayer].integers[I_LOADS_TO_DO]), PAD_S) + '||');
+    writeLn(padR('|| Lodestone recoveries: ' + getProggyStats(integers[I_RECOVERIES], false), PAD_S) + '||');
+    writeln(padR('|| Taking a break in: ' + timeUntil(BreakTime), PAD_S) + '||');
+
+    if players.getActive() > 1 then
+      writeln(padR('|| Switching players in: ' + timeUntil(SwitchTime), PAD_S) + '||')
+    else
+      writeln(padR('|| Switching players in: 1 active player', PAD_S) + '||');
+
+    writeln(padR('|| Breaks taken: ' + toStr(integers[I_TOTAL_BREAKS]) + ' (' + toStr(trunc(totalBreaks)) + ' h & ' + toStr(trunc(totalBreaks * 60) mod(60)) + ' m)', PAD_S) + '||');
+    writeLn(' \=========================================/');
+  end;
+
+  if StatsTimer.getTime() > 300000 then
+    if sendStats() then
+    begin
+      debug('Successfully committed stats');
+      StatsTimer.reset();
+      StatsTimer.start();
+    end else
+      debug('Failed to send stats');
+
+end;
+
+procedure endScript(reason: String);
+begin
+  players[currentPlayer].strings[S_REASON] := reason;
+
+  if switchPlayers(false) then
+    exit()
+  else
+    players[currentPlayer].isActive := false;
+
+  paintStatus('Terminating script');
+  wait(randomRange(4000, 3000));
+  players[currentPlayer].exitToLobby();
+  progressReport();
+  writeLn('');
+  writeLn('Post all proggys on the thread to keep Mayor happy :) ');
+  terminateScript();
+end;
+
+function mayorObjectFinder(filter, cluster: Boolean; hue, sat: Extended; W, H, colour, tolerance, clickType: Integer; mouseOverText, chooseOptions: Array of String): Boolean;
+var
+  i, x, y, chance: Integer;
+  p: TPoint;
+  TPA: TPointArray;
+  ATPA: T2DPointArray;
+begin
+  if not isLoggedIn() then
+    exit();
+
+  findColorsSpiralTolerance(x, y, TPA, colour, mainScreen.getBounds(), tolerance, colorSetting(2, hue, sat));
+
+  if filter then
+  begin
+    TPA.excludePointsDist(0, players[currentPlayer].integers[I_SEARCH_RADIUS], mainScreen.playerPoint.x, mainScreen.playerPoint.y);
+
+    if players[currentPlayer].integers[I_SEARCH_RADIUS] < 195 then
+      paintDebug('circle');
+  end;
+
+  mainScreen.filterPointsPlayer(TPA);
+
+  if (length(TPA) < 1) then exit();
+
+  if cluster then
+    ATPA := TPA.cluster(W, H)
+  else
+    ATPA := TPA.toATPA(W, H);
+
+  ATPA.filterBetween(0, 3);
+  ATPA.sortFromMidPoint(mainscreen.playerPoint);
+
+  paintDebug('atpa', ATPA);
+
+  for i := 0 to high(ATPA) do
+  begin
+
+    case random(7) of
+      0..2: missMouse(ATPA[i].getBounds().getGaussPoint(), true);
+    else
+      mouse(ATPA[i].getBounds().getGaussPoint(), MOUSE_MOVE);
+    end;
+
+    if isMouseOverText(mouseOverText, 500) then
+    begin
+      case clickType of
+        MOUSE_RANDOM: chance := 10;
+        MOUSE_LEFT: chance := 999999;
+        MOUSE_RIGHT: chance := 0;
+      end;
+
+      if randomClick(chance, chooseOptions) then
+      begin
+        result := true;
+        break();
+      end else
+        mouse(mainscreen.getBounds().getGaussPoint(), MOUSE_MOVE);
+
+    end;
+  end;
+
+  paintDebug('clear');
+
+end;
+
+procedure getBackToMine();
+var
+  p: TPoint;
+  t: TTimeMarker;
+begin
+  paintStatus('Recovering lost player - lodetone teleporting');
+
+  if lodestoneScreen.teleportTo(LOCATION_VARROCK) then
+  begin
+    t.start();
+
+    repeat
+      antiBan(3000);
+      wait(500);
+    until (minimap.findSymbol(p, MM_SYMBOL_LODESTONE, minimap.getBounds())) or (t.getTime() > 20000);
+
+    minimap.clickCompass();
+    mainscreen.setAngle(MS_ANGLE_HIGH);
+    sleepAndMoveMouse(randomRange(750, 1200));
+    Varrock.walkPath(FailSafeToMine);
+    inc(players[currentPlayer].integers[I_RECOVERIES]);
+  end;
+end;
+
+function findBankerNPCDots(var bank: TPoint): Boolean;
+var
+  i: Integer;
+  TPA: TPointArray;
+  ATPA: T2DPointArray;
+begin
+  TPA := minimap.getDots(MM_DOT_NPC, minimap.getBounds());
+  ATPA := TPA.split(10);
+  ATPA.sortBySize(true);
+  ATPA.filterBetween(2, 10);
+
+  if length(ATPA) = 0 then
+    exit(false);
+
+  for i := 0 to high(ATPA) do
+    if inRange(ATPA[i].getBounds().getWidth(), 20, 35) then
+    begin
+      result := true;
+      bank := ATPA[i].getBounds().getMiddle().rand(3);
+      bank.offSet(point(0, -6));
+    end;
+end;
+
+function isInArea(area: String): Boolean;
+begin
+  case lowercase(area) of
+    'mine': result := pointInBox(Varrock.getPlayerPos(), VEM_MINE_BOX);
+    'bank': result := pointInBox(Varrock.getPlayerPos(), VEB_BOX);
+  end;
+end;
+
+procedure walkToBank();
+var
+  p: TPoint;
+  walkTimer: TTimeMarker;
+begin
+  walkTimer.start();
+
+  incEx(players[currentPlayer].integers[I_GEMS_FOUND], tabBackpack.countDTM(GemsDTM));
+
+  paintStatus('Walking to Varrock East Bank');
+
+  if players[currentPlayer].booleans[B_SPS_ANY_ANGLE] then
+    case random(2) of
+      0: begin
+           minimap.clickCompass();
+           mainScreen.setAngle(MS_ANGLE_HIGH);
+           sleepAndMoveMouse(randomRange(750, 1200));
+         end;
+    end else
+      if random(4) <> 0 then
+        minimap.setAngle(MM_DIRECTION_NORTH, true)
+      else begin
+        minimap.clickCompass();
+        mainScreen.setAngle(MS_ANGLE_HIGH);
+        smallRandomMouse();
+      end;
+
+  repeat
+    if (not isLoggedIn()) or isInArea('bank') then
+      exit();
+
+    if walkTimer.getTime() > 60000 then
+      getBackToMine();
+
+    if not Varrock.walkPath(PathToBank) then
+    begin
+      minimap.setAngle(MM_DIRECTION_NORTH, true);
+
+      if not Varrock.walkPath(PathToBank) then
+      begin
+        minimap.clickCompass();
+        smallRandomMouse();
+        mainScreen.setAngle(MS_ANGLE_HIGH);
+        Varrock.blindWalk(Point(287, 138));
+      end;
+    end;
+
+    if findBankerNPCDots(p) then
+    begin
+      mouse(p, MOUSE_LEFT);
+      minimap.waitPlayerMoving(600);
+      exit();
+    end;
+
+  until walkTimer.getTime() > 300000;
+
+  endScript('Walk bank');
+end;
+
+procedure openBank();
+var
+  bankTimer: TTimeMarker;
+  p: TPoint;
+begin
+  bankTimer.start();
+
+
+  paintStatus('Opening Varrock East Bank');
+
+  repeat
+    if (not isLoggedIn) or (not isInArea('bank')) or bankScreen.isOpen() or pinScreen.isOpen() then
+      exit();
+
+    minimap.waitPlayerMoving(600);
+
+    if random(4) <> 1 then
+      if mayorObjectFinder(false, true, BOOTH_HUE, BOOTH_SAT, 5, 5, BOOTH_COLOUR, BOOTH_TOL, MOUSE_LEFT, ['ooth', 'ank boo'], ['ank Bank']) then
+        if (bankScreen.isOpen(5000)) or (pinScreen.isOpen(5000)) then
+          exit();
+
+    if mayorObjectFinder(false, true, BANKER_HUE, BANKER_SAT, 5, 5, BANKER_COLOUR, BANKER_TOL, MOUSE_RIGHT, ['anker', 'ank Ban'], ['ank Bank']) then
+      if bankScreen.isOpen(5000) or pinScreen.isOpen(5000) then
+        exit();
+
+    if findBankerNPCDots(p) then
+      mouse(p, MOUSE_LEFT)
+    else
+      minimap.setAngle(randomRange(35, 50));
+
+  until (bankTimer.getTime() > 120000) or (not isLoggedIn());
+
+  endScript('Find Bank');
+end;
+
+procedure depositOre();
+var
+  bankTimer: TTimeMarker;
+begin
+  if bankScreen.isOpen(3000) or pinScreen.isOpen(3000)  then
+  begin
+    paintStatus('Depositing Ore');
+
+    if pinScreen.isOpen() then
+      pinScreen.enter(Players[currentPlayer].bankPin);
+
+    bankTimer.start();
+
+    repeat
+      if (bankscreen.getPackCount() > 0) then
+      begin
+        bankScreen.quickDeposit(QUICK_DEPOSIT_INVENTORY);
+        if random(2) = 0 then
+          wait(gaussRangeInt(1100, 1750))
+        else
+          sleepAndMoveMouse(randomRange(1100, 1750));
+      end;
+
+      if bankscreen.getPackCount() < 3 then
+      begin
+        bankscreen.close();
+
+        if random(2) = 0 then
+          wait(gaussRangeInt(1100, 1750))
+        else
+          sleepAndMoveMouse(randomRange(1100, 1750));
+
+        inc(players[currentPlayer].integers[I_LOADS_DONE]);
+        exit();
+      end;
+    until (bankTImer.getTime() > 45000) or (not isLoggedIn());
+
+    endScript('Bank ore');
+  end;
+end;
+
+procedure walkToMine();
+var
+  walkTimer: TTimeMarker;
+begin
+  walkTimer.start();
+
+  paintStatus('Walking to Varrock East Mine');
+
+  if players[currentPlayer].booleans[B_SPS_ANY_ANGLE] then
+    case random(2) of
+      0: begin
+           minimap.clickCompass();
+           mainScreen.setAngle(MS_ANGLE_HIGH);
+           sleepAndMoveMouse(randomRange(750, 1200));
+         end;
+    end else
+      if random(4) <> 0 then
+        minimap.setAngle(MM_DIRECTION_NORTH, true)
+      else begin
+        minimap.clickCompass();
+        mainScreen.setAngle(MS_ANGLE_HIGH);
+        smallRandomMouse();
+      end;
+
+  repeat
+    if (not isLoggedIn()) or isInArea('mine') then
+      exit();
+
+    if walkTimer.getTime() > 60000 then
+      getBackToMine();
+
+    if not Varrock.walkPath(PathToMine) then
+    begin
+      minimap.setAngle(MM_DIRECTION_NORTH, true);
+
+      if not Varrock.walkPath(PathToMine) then
+      begin
+        minimap.clickCompass();
+        smallRandomMouse();
+        mainScreen.setAngle(MS_ANGLE_HIGH);
+        Varrock.blindWalk(Point(411, 337));
+      end;
+    end;
+
+  until walkTimer.getTime() > 300000;
+
+  endScript('Walk mine');
+end;
+
+function countOre(): array[0..2] of Integer;
+var
+  i: Integer;
+begin
+  for i := 0 to high(OreDTMs) do
+    result[i] := tabBackpack.countDTM(OreDTMs[i]);
+end;
+
+procedure mineRocks();
+var
+  mineTimer: TTimeMarker;
+  i, oresForDrop: Integer;
+begin
+  mineTimer.start();
+  mainscreen.setAngle(MS_ANGLE_HIGH);
+
+  if players[currentPlayer].booleans[B_POWER_MINING] then
+  begin
+    oresForDrop := random(27) + 1;
+    writeLn('Mining ' + toStr(oresForDrop) + ' ores before dropping');
+  end;
+
+  repeat
+    paintStatus('Mining Ore');
+    mouseSpeed := randomRange(20, 40);
+    closeTaskPopup();
+
+    i := 0;
+
+    if players[currentPlayer].booleans[B_DO_14_OF_EACH] then
+      if countOre[1] >= 14 then
+        i := 1;
+
+    for i to high(PlayerRocks[currentPlayer]) do
+      if mayorObjectFinder(true, false, PlayerRocks[currentPlayer][i].Hue,
+                                          PlayerRocks[currentPlayer][i].Sat,
+                                        15, 15,
+                                        PlayerRocks[currentPlayer][i].Colour,
+                                        PlayerRocks[currentPlayer][i].Tol,
+                                        MOUSE_RANDOM,
+                                        PlayerRocks[currentPlayer][i].OverText,
+                                        ['ine'])
+
+    then
+    begin
+      rockTimer.reset();
+      rockTimer.start();
+
+      if waitPackMoving(MIN_PIXEL_SHIFT,  MINE_TIMER + random(1000)) then
+      begin
+        inc(OresMined[currentPlayer][PlayerRocks[currentPlayer][i].ID]);
+        break();
+      end;
+
+    end else
+      debug('Didn''t find any rock colours!');
+
+    claimTicket();
+    antiBan(1500);
+
+    if random(14) = 5 then
+    begin
+      randomCompass(0, 360, false);
+      wait(randomRange(100, 250));
+    end;
+
+    if rockTimer.getTime() > 30000 then
+      if not players[currentPlayer].booleans[B_POWER_MINING] then
+        walkToMine();
+
+    if players[currentPlayer].booleans[B_POWER_MINING] then
+      if tabBackpack.count() >= oresForDrop then
+        break();
+
+  until tabBackpack.isFull() or (mineTimer.getTime() > 300000) or (not isLoggedIn());
+
+  if rockTimer.getTime() > 600000 then
+    endScript('10 minutes')
+end;
+
+procedure dropOre();
+var
+  x, y, i, slot, gemsFound: Integer;
+  t: TTimeMarker;
+begin
+  t.start();
+
+  paintStatus('Dropping ore');
+
+  for i := 0 to high(OreDTMs) do
+    if findDTM(OreDTMs[i], x, y, tabBackPack.getBounds()) then
+    repeat
+      sendKeys(toStr(i + 1), randomRange(60, 120), randomRange(60, 120));
+      wait(gaussRangeInt(0,100));
+    until (tabBackpack.countDTM(OreDTMs[i]) = 0) or (not isLoggedIn()) or (t.getTime() > 7000);
+
+
+  for i := 0 to high(OreDTMs) do
+    for slot := 1 to random(10) do
+      if findDTM(OreDTMs[i], x, y, tabBackPack.getSlotBox(slot)) then
+      begin
+        tabBackpack.mouseSlot(slot, MOUSE_RIGHT);
+        chooseOption.select(['Drop']);
+        wait(gaussRangeInt(250, 900));
+      end;
+
+  inc(players[currentPlayer].integers[I_LOADS_DONE]);
+
+  gemsFound := tabBackpack.countDTM(GemsDTM);
+
+  if gemsFound > 0 then
+    packManagement();
+
+  if gemsFound > 25 then
+    endScript('Full gems');
+
+end;
+
+procedure setupActionBar();
+var
+  x, y, i: Integer;
+  oreSlot: Array [0..2] of Integer;
+begin
+  if not players[currentPlayer].booleans[B_POWER_MINING] then
+    exit();
+
+  paintStatus('Checking actionbar');
+
+  for i := 0 to high(oreSlot) do
+    if findDTM(OreDTMs[i], x, y, tabBackPack.getBounds()) then
+    begin
+      oreSlot[i] := tabBackPack.pointToSlot([x, y]);
+      if findDTM(OreDTMs[i], x, y, actionBar.getSlotBox(i + 1)) then
+        continue();
+      addItemToActionBar(oreSlot[i], i + 1);
+    end;
+ end;
+
+function loadTRock(ID: Integer; name: String; overText: TStringArray; colour, tol: Integer; hue, sat: Extended; price: Integer): TRock;
+begin
+  result.ID := ID;
+  result.Name := name;
+  result.OverText := overText;
+  result.Colour := colour;
+  result.Tol := tol;
+  result.Hue := hue;
+  result.Sat := sat;
+  result.Price := price;
+end;
+
+procedure setupPlayerRocks();
+var
+  i, j: Integer;
+  AreMiningRocks: Array [0..2] of Boolean;
+begin
+  writeLn('Loading player rocks:');
+
+  for i := 0 to high(players) do
+  begin
+    AreMiningRocks := [players[i].booleans[B_MINE_IRON],
+                       players[i].booleans[B_MINE_TIN],
+                       players[i].booleans[B_MINE_COPPER]];
+
+    for j := 0 to 2 do
+      if AreMiningRocks[j] then
+      begin
+        setLength(PlayerRocks[i], length(PlayerRocks[i]) + 1);
+        PlayerRocks[i][length(PlayerRocks[i]) - 1] := AllRocks[j];
+        writeLn(' -----> Player [' + toStr(i) + '] Rock ' + toStr(length(PlayerRocks[i])) + ' is: ' + AllRocks[j].Name);
+      end;
+
+    writeLn(' -----> Player [' + toStr(i) + '] is mining ' + toStr(length(PlayerRocks[i])) + ' type(s) of ore');
+
+    if length(PlayerRocks[i]) < 1 then
+    begin
+      writeLn(' -----> Player [' + players[i].nickname + '] is not mining anything. Terminating script.');
+      terminateScript();
+    end;
+
+  end;
+end;
+
+procedure mainLoop();
+begin
+  if not isLoggedIn() then
+    exit();
+
+  claimTicket();
+
+  case players[currentPlayer].booleans[B_POWER_MINING] of
+    true:
+      if sumIntegerArray(countOre()) > 0 then
+      begin
+        setupActionBar();
+        dropOre();
+      end else
+        mineRocks();
+
+    false:
+      if tabBackpack.count() >= 28 then
+      begin
+        walkToBank();
+        openBank();
+        depositOre();
+      end else
+      begin
+        walkToMine();
+        mineRocks();
+      end;
+  end;
+
+  progressReport();
+
+  if getSystemTime() >= SwitchTime then
+    switchPlayers(true);
+
+  takeBreak();
+end;
+
+procedure setup();
+var
+  i: Integer;
+begin
+  initPlayerForm();
+  runPlayerForm();
+
+  if not playerForm.isScriptReady then
+    terminateScript();
+
+  declarePlayers();
+  //debugSPFSettings();
+
+  disableIPScreenshots := true;
+  disableSRLLog := true;
+
+  {$IFDEF SMART}
+  smartEnableDrawing := true;
+  smartShowConsole := false;
+  {$ENDIF}
+
+  setupSRL();
+
+{ SPS maps and paths setup }
+  checkForFile('Includes/SPS/img/runescape_other/VEM_03.png', 'http://i.imgur.com/qDG7TSu.png', 'VEM SPS map');
+  PathToBank := [Point(414, 339), Point(425, 315), Point(432, 271), Point(431, 225), Point(424, 190), Point(411, 153), Point(395, 122), Point(365, 115), Point(333, 113), Point(304, 116), Point(287, 138)];
+  PathToMine := [Point(284, 143), Point(284, 118), Point(322, 115), Point(352, 114), Point(385, 114), Point(409, 137), Point(421, 189), Point(433, 241), Point(433, 283), Point(431, 320), Point(411, 343)];
+  FailSafeToMine := [Point(132, 311), Point(163, 316), Point(192, 323), Point(228, 333), Point(264, 337), Point(305, 342), Point(341, 341), Point(371, 338), Point(406, 343)];
+  Varrock.setup('VEM_03', RUNESCAPE_OTHER);
+  spsAnyAngle := players[currentPlayer].booleans[B_SPS_ANY_ANGLE];
+
+{ Load the DTMs }
+  GemsDTM :=  DTMFromString('m1gAAAHic42JgYNjExMCwDYhXAvESJgh/JxTvAuLVUDkuIGYGYkYg5gZiMSDmBWJRIBaB0iBcISEINJUJB2aEs/8zEAcYicQIAABXaglk');
+  OreDTMs := [DTMFromString('mggAAAHicY2NgYNjAxMCwEYh3AfEOIF4DxEtBNCMDwxIgXgrEm4F4CxCvA2JzBQkGE3lxhkQ/czAd6W4EZnMBzcKGGXFgCAAAaJkMag=='),
+           DTMFromString('mggAAAHicY2NgYJBgZmCQBmIlIFYEYlEg5gfifkYGhlYg7gbiSUA8A4h7gTgtMRGCAy0ZslJTGWK9TBgSfEwZuIBmYcOMODAEAAA0qwqB'),
+           DTMFromString('mggAAAHicY2NgYHjHxMDwEYh/AfF3IH4DxE+AuJeRgaEViLuBeAoQTwfiiUC8NcOcYV+OFUNWiDXDrixLhiQ/M4aUAHMGLqBZ2DAjDgwBAKszEDM=')];
+  PopUpDTM := DTMFromString('mbQAAAHicY2VgYGBmYmD4y8jAwMkEwSC2PVDcEopdofjPFlOGTB52MLYEqgFhEOBnQAWMWDAYAAD0gAa9');
+  addonTerminate('freeTheDtms');
+
+{ Load the rock profiles }
+  writeLn('');
+  writeLn('Getting latest prices:');
+  AllRocks := [
+    loadTRock(0, 'Iron', ['ron ore roc'], IRON_COLOUR, IRON_TOL, IRON_HUE, IRON_SAT, getGEPrice('Iron_ore')),
+    loadTRock(1, 'Tin', ['in ore roc'], TIN_COLOUR, TIN_TOL, TIN_HUE, TIN_SAT, getGEPrice('Tin_ore')),
+    loadTRock(2, 'Copper', ['opper ore roc'], COPPER_COLOUR, COPPER_TOL, COPPER_HUE, COPPER_SAT, getGEPrice('Copper_ore'))];
+  writeLn('');
+  setupPlayerRocks();
+
+{ Initialise breaking variables }
+  resetBreakTimer();
+  resetSwitchTimer();
+  StatsTimer.start();
+
+  for i := 0 to high(players) do
+  begin
+    TotalBreakTime[i].start();
+    TotalBreakTime[i].pause();
+  end;
+
+  if isLoggedIn() then
+  begin  // SRL worked timer doesn't start initially if already logged in
+    if players[currentPlayer].worked.paused then
+      players[currentPlayer].worked.start();
+
+    MiningLevel[currentPlayer] := tabStats.getSkillLevel(SKILL_MINING);
+  end;
+end;
+
+begin
+  clearDebug();
+  getUpdate();
+
+  //terminateScript();
+
+  setup();
+
+  {
+  progressReport();
+  terminateScript();
+  }
+
+  repeat
+    repeat
+      if not isLoggedIn() then
+        loginPlayer();
+
+      { writeLn(Varrock.debugPlayerPos()); }
+
+      mainLoop();
+    until players[currentPlayer].integers[I_LOADS_DONE] >= players[currentPlayer].integers[I_LOADS_TO_DO];
+
+  until not switchPlayers(false);
+
+  endScript('No more active players');
+end.
