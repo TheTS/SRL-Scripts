@@ -16,17 +16,16 @@ var
   newFile: Integer;
   newRev: Extended;
 begin
-  newRev := strToFloat(getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/master/' + REPO + '/version.txt'));
+  newRev := strToFloat(getPage('http://tomstewart.net/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/master/' + REPO + '/version.txt'));
   printf('Current script revision: %f || Online script revision: %f', [REVISION, newRev]);
 
   if newRev > REVISION then
   begin
     printf('Updating ' + SCRIPT_NAME + ' from revision %f to %f', [REVISION, newRev]);
-    print('Please reopen this file');
     newFile := rewriteFile(scriptPath + SCRIPT_NAME, false);
-
-    writeFileString(newFile, getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/master/'  + REPO + '/' + SCRIPT_NAME));
+    writeFileString(newFile, getPage('http://tomstewart.net/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/master/'  + REPO + '/' + SCRIPT_NAME));
     closeFile(newFile);
+    print('New script saved to: ' + scriptPath);
     terminateScript();
   end;
 end;

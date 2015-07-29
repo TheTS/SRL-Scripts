@@ -3,31 +3,36 @@ program MayorResourceDungeon;
 {$i srl-6/srl.simba}
 {$i sps/lib/sps-rs3.simba}
 {$i srl-6/lib/misc/srlplayerform.simba}
-                         (* Last updated: 14.JULY.2015 *)
+                         (* Last updated: 29.JULY.2015 *)
                          (*         Press Play        *)
 const
-  REVISION = 15.0;
+  REVISION = 16.0;
 
 type
   B_Enum = (B_SILVER, B_COAL, B_MITHRIL, B_BAG, B_FILLED, B_DEBUG);
   I_Enum = (I_SILVER, I_COAL, I_MITHRIL, I_LOADS, I_BREAK, I_BREAK_D);
 
-type TMSObject = record    // Type to hold colour, sps coords, and overtext of objects
-  ID: Byte;
-  coords: TPoint;
-  overText: TStringArray;
-  colours: T2DColorData;
-  maxWait, bitmap: Integer;
-end;
+  TMSObject = record   // Type to store colour, sps coords, and other objects properties
+    name: String;
+    coords: TPoint;
+    overText: TStringArray;
+    colours: T2DColorData;
+    maxWait, bitmap: Integer;
+  end;
+
+  TStats = record      // Type to organise online stats variables
+    newValues, oldValues: Array[0..3] of Integer;
+    timer: TTimeMarker;
+  end;
 
 var
+  Stats: TStats;
+  FailTimer: TTimeMarker;
   Silver, Coal, Mithril, Deposit: TMSObject;
-  OldValues, NewValues: Array [0..3] of Integer;
-  StatsTimer, FailTimer: TTimeMarker;
 
-procedure TMSObject.init(_ID: Byte; _maxWait: Integer; _coords: TPoint; _overText: TStringArray; _colours: T2DColorData; _hasBMP: Boolean; _string: String);
+procedure TMSObject.init(_Name: String; _maxWait: Integer; _coords: TPoint; _overText: TStringArray; _colours: T2DColorData; _hasBMP: Boolean; _string: String);
 begin
-  self.ID       := _ID;
+  self.Name     := _Name;
   self.maxWait  := _maxWait;
   self.coords   := _coords;
   self.overText := _overText;
@@ -37,10 +42,10 @@ end;
                           // Creating Mainscreen objects (TMSObjects)
 procedure initObjects();
 begin    //ID, MaxWait, SPS coords, OverText,   2 x Colours [Col, Tol, [Hue, Sat, Sens]],                                       HasBMP, BMPString
-  Silver.init( 0, 4,  [174, 174], ['ilver'],  [[4808543, 7, [2, [0.14, 0.15, 0.00]]], [11847142, 20, [2, [0.28, 2.50, 0.00]]]], True,  'meJzraW1tqatjYmDQlOftaW0FMpBRdloaEAEZYUFBMRERxXl5AAf9CtM=');
-  Coal.init(   1, 11, [222, 174], ['oal'],    [[1005427, 5, [2, [0.18, 2.16, 0.00]]], [1579546,   4, [2, [0.00, 0.47, 0.00]]]], True,  'meJyTVlaWBiMmBgY4A8KGMIQlJSFsXkFBIAIAXmIDVw==');
-  Mithril.init(2, 22, [146, 170], ['ithr'],   [[1005427, 5, [2, [0.18, 2.16, 0.00]]], [8410966,  15, [2, [0.03, 0.29, 0.00]]]], True,  'meJzzNzVlYmBARjYaGkAEZBgqKpipqNhpaQLZlmpqzrq6/qamAGSlBTw=');
-  Deposit.init(4, 0,  [122, 146], ['eposit'], [[3956852, 3, [2, [0.10, 0.25, 0.00]]], [6847367,   5, [2, [0.18, 0.22, 0.00]]]], False, '');
+  Silver.init('Silver',   4,  [174, 174], ['ilver'],  [[4808543, 7, [2, [0.14, 0.15, 0.00]]], [11847142, 20, [2, [0.28, 2.50, 0.00]]]], True,  'meJzraW1tqatjYmDQlOftaW0FMpBRdloaEAEZYUFBMRERxXl5AAf9CtM=');
+  Coal.init('Coal',       11, [222, 174], ['oal'],    [[1005427, 5, [2, [0.18, 2.16, 0.00]]], [1579546,   4, [2, [0.00, 0.47, 0.00]]]], True,  'meJyTVlaWBiMmBgY4A8KGMIQlJSFsXkFBIAIAXmIDVw==');
+  Mithril.init('Mithril', 22, [146, 170], ['ithr'],   [[1005427, 5, [2, [0.18, 2.16, 0.00]]], [8410966,  15, [2, [0.03, 0.29, 0.00]]]], True,  'meJzzNzVlYmBARjYaGkAEZBgqKpipqNhpaQLZlmpqzrq6/qamAGSlBTw=');
+  Deposit.init('Deposit', 0,  [122, 146], ['eposit'], [[3956852, 3, [2, [0.10, 0.25, 0.00]]], [6847367,   5, [2, [0.18, 0.22, 0.00]]]], False, '');
 end;
 
 procedure freeObjects();
@@ -101,23 +106,23 @@ begin           // Just using SRL's built-in 'worked' timer for the break timer
   end;
 end;
 
-procedure sendStats();
+procedure TStats.Send();
 var
   c, i: Integer;
-  calcValues: Array [0..3] of Integer;
+  calcValues: Array[0..3] of Integer;
 begin
-  if (StatsTimer.getTime() < 300000) then exit();
+  if (self.timer.getTime() < 300000) then exit();
 
   c := initializeHTTPClient(false);
 
-  addPostVariable(c, 'Time', intToStr(NewValues[0]));
+  addPostVariable(c, 'Time', intToStr(self.newValues[0]));
   addPostVariable(c, 'Nickname', players[currentPlayer].nickname);
-  addPostVariable(c, 'Silver', intToStr(NewValues[1]));
-  addPostVariable(c, 'Coal', intToStr(NewValues[2]));
-  addPostVariable(c, 'Mithril', intToStr(NewValues[3]));
+  addPostVariable(c, 'Silver', intToStr(self.newValues[1]));
+  addPostVariable(c, 'Coal', intToStr(self.newValues[2]));
+  addPostVariable(c, 'Mithril', intToStr(self.newValues[3]));
   addPostVariable(c, 'Revision', floatToStr(REVISION));
 
-  if (pos('true', lowercase(postHTTPPageEx(c, 'http://srlmayor.com/mayorstats/resourcedung/UpdateStats.php'))) <> 0) then
+  if (pos('true', lowercase(postHTTPPageEx(c, 'http://tomstewart.net/srl/stats/rdm/updatestats.php'))) <> 0) then
   begin
     calcValues := [round(getTimeRunning() / 60000),
                    players[currentPlayer].integers[Ord(I_SILVER)],
@@ -126,14 +131,14 @@ begin
 
     for i := 0 to high(calcValues) do
     begin
-      NewValues[i] := calcValues[i] - OldValues[i];
-      OldValues[i] := calcValues[i];
+      self.newValues[i] := calcValues[i] - self.oldValues[i];
+      self.oldValues[i] := calcValues[i];
     end;
 
   end;
 
   freeHTTPClient(c);
-  StatsTimer.start();
+  self.timer.start();
 end;
 
 procedure getUpdate();
@@ -141,14 +146,14 @@ var
   newFile: Integer;
   newRev: Extended;
 begin
-  newRev := strToFloat(getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/master/Mayor-Resource-Dungeon/version.txt'));
+  newRev := strToFloat(getPage('http://tomstewart.net/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/master/Mayor-Resource-Dungeon/version.txt'));
   printf('Current script revision: %f || Online script revision: %f', [REVISION, newRev]);
 
   if newRev > REVISION then
   begin
     printf('Updating MayorResourceDungeon.simba from revision %f to %f', [REVISION, newRev]);
     newFile := rewriteFile(scriptPath + 'MayorResourceDungeon.simba', false);
-    writeFileString(newFile, getPage('http://srlmayor.com/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/master/Mayor-Resource-Dungeon/MayorResourceDungeon.simba'));
+    writeFileString(newFile, getPage('http://tomstewart.net/proxy.php?url=https://raw.githubusercontent.com/TheTS/SRL-Scripts/master/Mayor-Resource-Dungeon/MayorResourceDungeon.simba'));
     closeFile(newFile);
     print('Please reopen this file');
     terminateScript();
@@ -284,17 +289,24 @@ begin
   timer.start();
   if tabBackpack.isFull() then exit();
 
-  if self.ID = 2 then
+  if self.Name = 'Mithril' then
     if not sps.isInBox([112, 138, 164, 186]) then
-      self.walkTo(); // To prevent mining mith in the east room
+      self.walkTo(); // To prevent mining mithril in the east room
 
   startMine:
   repeat
     if not isLoggedIn() then exit();
 
     if not self.find() then
-      self.walkTo()         // Too easy haha
-    else begin
+    begin
+      self.walkTo();
+      {$IFDEF SMART}
+        smartImage.clear();
+        smartImage.drawText('Waiting for ' + self.name + ' spawn: ' + toStr(timer.getTime()) + '/' + toStr(maxWait), point(10, 375), clRed);         // Too easy haha
+      {$ENDIF}
+    end else
+    begin
+      {$IFDEF SMART}smartImage.clear();{$ENDIF}
       timer.start();
       if waitForOre(self, 150, (self.maxWait * 1000) + random(6000)) then FailTimer.start();
     end;
@@ -389,7 +401,6 @@ end;
 
 procedure mainLoop();
 begin
-  {$IFDEF SMART}smartImage.clear();{$ENDIF}
 
   case tabBackpack.isFull() of
     true: depositOre();
@@ -406,7 +417,7 @@ begin
   if players[currentPlayer].booleans[Ord(B_BAG)] and (random(15) = 0) then tabBackpack.dragSlot(getCoalBagSlot(), random(28) + 1);
 
   progressReport();
-  sendStats();
+  Stats.Send();
   takeBreak();
 
   if (FailTimer.getTime() > 600000) then
@@ -444,7 +455,7 @@ begin
   setupSRL();
   sps.setup('RESOURCE_DUNG_MINE', RUNESCAPE_OTHER);
   players[currentPlayer].worked.start();
-  StatsTimer.start();
+  Stats.Timer.start();
   FailTimer.start();
 
   repeat
