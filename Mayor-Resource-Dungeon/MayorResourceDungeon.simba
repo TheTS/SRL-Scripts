@@ -3,13 +3,12 @@ program MayorResourceDungeon;
 {$i srl-6/srl.simba}
 {$i sps/lib/sps-rs3.simba}
 {$i srl-6/lib/misc/srlplayerform.simba}
-                         (* Last updated: 29.JULY.2015 *)
-                         (*         Press Play        *)
-const
-  REVISION = 16.0;
+                        (*         Press Play        *)
+const                   (* Last updated: 1.AUG.2015  *)
+  REVISION = 17.0;
 
 type
-  B_Enum = (B_SILVER, B_COAL, B_MITHRIL, B_BAG, B_FILLED, B_DEBUG);
+  B_Enum = (B_SILVER, B_COAL, B_MITHRIL, B_DEBUG);
   I_Enum = (I_SILVER, I_COAL, I_MITHRIL, I_LOADS, I_BREAK, I_BREAK_D);
 
   TMSObject = record   // Type to store colour, sps coords, and other objects properties
@@ -25,8 +24,14 @@ type
     timer: TTimeMarker;
   end;
 
+  TCoalBag = record    // Type to manage the coalbag
+    bitmap, amount: Integer;
+    isActive: Boolean;
+  end;
+
 var
   Stats: TStats;
+  CoalBag: TCoalBag;
   FailTimer: TTimeMarker;
   Silver, Coal, Mithril, Deposit: TMSObject;
 
@@ -39,18 +44,19 @@ begin
   self.colours  := _colours;
   if _hasBMP then self.bitmap := bitmapFromString(4, 4, _string);
 end;
-                          // Creating Mainscreen objects (TMSObjects)
+                          // Creating Mainscreen objects (TMSObjects) + CoalBag
 procedure initObjects();
 begin    //ID, MaxWait, SPS coords, OverText,   2 x Colours [Col, Tol, [Hue, Sat, Sens]],                                       HasBMP, BMPString
   Silver.init('Silver',   4,  [174, 174], ['ilver'],  [[4808543, 7, [2, [0.14, 0.15, 0.00]]], [11847142, 20, [2, [0.28, 2.50, 0.00]]]], True,  'meJzraW1tqatjYmDQlOftaW0FMpBRdloaEAEZYUFBMRERxXl5AAf9CtM=');
   Coal.init('Coal',       11, [222, 174], ['oal'],    [[1005427, 5, [2, [0.18, 2.16, 0.00]]], [1579546,   4, [2, [0.00, 0.47, 0.00]]]], True,  'meJyTVlaWBiMmBgY4A8KGMIQlJSFsXkFBIAIAXmIDVw==');
   Mithril.init('Mithril', 22, [146, 170], ['ithr'],   [[1005427, 5, [2, [0.18, 2.16, 0.00]]], [8410966,  15, [2, [0.03, 0.29, 0.00]]]], True,  'meJzzNzVlYmBARjYaGkAEZBgqKpipqNhpaQLZlmpqzrq6/qamAGSlBTw=');
   Deposit.init('Deposit', 0,  [122, 146], ['eposit'], [[3956852, 3, [2, [0.10, 0.25, 0.00]]], [6847367,   5, [2, [0.18, 0.22, 0.00]]]], False, '');
+  CoalBag.bitmap := BitmapFromString(6, 6, 'meJzLKK6QN3RTNPVu6JtS1zMJiPKq6ytau5snTm/sn+qRWM/EwGASXGYRUdc2ZXZMS2dQWRVQBIiS+6dkz1qQOmk6XMQ9LSu0uj6kss4nr8glKQ0oYhlVbx3XapfYDWSYBJUAALNDJo4=');
 end;
 
 procedure freeObjects();
 begin
-  freeBitmaps([Silver.bitmap, Coal.bitmap, Mithril.bitmap]);
+  freeBitmaps([Silver.bitmap, Coal.bitmap, Mithril.bitmap, CoalBag.bitmap]);
 end;
 
 procedure initPlayerForm();
@@ -73,7 +79,7 @@ begin
   players[0].booleans[Ord(B_SILVER)] := strToBool(playerForm.players[0].settings[2]);
   players[0].booleans[Ord(B_COAL)] := True;
   players[0].booleans[Ord(B_MITHRIL)] := strToBool(playerForm.players[0].settings[3]);
-  players[0].booleans[Ord(B_BAG)] := strToBool(playerForm.players[0].settings[4]);
+  CoalBag.isActive := strToBool(playerForm.players[0].settings[4]);
   players[0].booleans[Ord(B_DEBUG)] := strToBool(playerForm.players[0].settings[5]);
 end;
 
@@ -232,8 +238,8 @@ begin
   timer.start();
   minimap.waitPlayerMoving();
 
-  if ((not players[currentPlayer].booleans[Ord(B_BAG)]) and (tabBackpack.count() >= 27)) or
-     (players[currentPlayer].booleans[Ord(B_FILLED)] and (tabBackpack.count() >= 27)) then
+  if ((not CoalBag.isActive) and (tabBackpack.count() >= 27)) or
+     (CoalBag.isFull() and (tabBackpack.count() >= 27)) then
   begin
     SPS_PosToMM([127, 147], sps.getPlayerPos(), p); // Hover mouse on depositBox (on MM) if 27 ore in inv
     if (p.x <> -1) then mouse(p, MOUSE_MOVE);
@@ -246,35 +252,71 @@ begin
   until (getPixelShiftAverage(mainscreen.playerBox, 100, 700) < minShift) or (timer.getTime() > maxTime);
 end;
 
-function getCoalBagSlot(): Integer;
+function TCoalBag.getSlot(): Integer;
 var
   x, y: Integer;
-  coalBag: Integer := BitmapFromString(6, 6, 'meJzLKK6QN3RTNPVu6JtS1zMJiPKq6ytau5snTm/sn+qRWM/EwGASXGYRUdc2ZXZMS2dQWRVQBIiS+6dkz1qQOmk6XMQ9LSu0uj6kss4nr8glKQ0oYhlVbx3XapfYDWSYBJUAALNDJo4=');
 begin
   result := -1;
-  if findBitmapToleranceIn(coalBag, x, y, tabBackpack.getBounds(), 15) then
-  begin
+  if findBitmapToleranceIn(self.bitmap, x, y, tabBackpack.getBounds(), 15) then
     result := tabBackpack.pointToSlot([x, y]);
-    {$IFDEF SMART}smartImage.drawBox(tabBackpack.getSlotBox(result));{$ENDIF}
-  end;
-  freeBitmap(coalBag);
 end;
 
-function useCoalBag(chooseOpt: TStringArray): Boolean
-var
-  slot: Integer;
+function TCoalBag.isFull(): Boolean;
 begin
-  if players[currentPlayer].booleans[Ord(B_BAG)] and players[currentPlayer].booleans[Ord(B_COAL)] then
+  result := self.amount >= 81;
+end;
+
+function TCoalBag.isEmpty(): Boolean;
+begin
+  result := self.amount <= 0;
+end;
+
+function TCoalBag.Interact(Fill: Boolean): Boolean
+var
+  coal1, coal2: Byte;
+begin
+  if CoalBag.isActive and players[currentPlayer].booleans[Ord(B_COAL)] then
   begin
     if tabBackpack.waitWhileLocked(5000) then wait(random(1000, 1500));
-    slot := getCoalBagSlot();
 
-    if (slot <> -1) then
+    coal1 := tabBackpack.countBitmap(Coal.bitmap, 18);
+
+    if (self.getSlot() <> -1) then
     begin
-      tabBackpack.mouseSlot(slot, MOUSE_RIGHT);
-      chooseOption.select(chooseOpt);
-      players[currentPlayer].booleans[Ord(B_FILLED)] := not players[currentPlayer].booleans[Ord(B_FILLED)];
-      if tabBackpack.waitForShift(3500) then exit(true);
+      tabBackpack.mouseSlot(self.getSlot(), MOUSE_RIGHT);
+
+      if Fill then
+        chooseOption.select(['ill'])
+      else
+        chooseOption.select(['raw-many']);
+
+      if tabBackpack.waitForShift(3500) or chatBox.findTextOnLines(['full', 'withdraw'], [0..1]) then
+      begin
+        coal2 := tabBackpack.countBitmap(Coal.bitmap, 18);
+
+        case Fill of
+          True:
+            if (coal2 > 0) then
+              self.amount := 81
+            else
+              self.amount += (coal1 - coal2);
+          False:
+            if (coal2 < 27) then
+              self.amount := 0
+            else
+              self.amount -= (coal2 - coal1);
+        end;
+
+        result := true;
+        {$IFDEF SMART}
+          smartImage.clearArea(tabBackpack.getBounds);
+          smartImage.drawText('Coal bag: ', point(710, 510), clRed);
+          smartImage.drawText('Amount: ' + toStr(self.amount), point(718, 520), clRed);
+          smartImage.drawText('Full: ' + toStr(self.isFull()), point(718, 530), clRed);
+          smartImage.drawText('Empty: ' + toStr(self.isEmpty()), point(718, 540), clRed);
+        {$ENDIF}
+      end;
+
     end;
   end;
 end;
@@ -301,12 +343,12 @@ begin
     begin
       self.walkTo();
       {$IFDEF SMART}
-        smartImage.clear();
-        smartImage.drawText('Waiting for ' + self.name + ' spawn: ' + toStr(timer.getTime()) + '/' + toStr(maxWait), point(10, 375), clRed);         // Too easy haha
+        smartImage.clearArea(mainScreen.getBounds);
+        smartImage.drawText('Waiting for ' + self.name + ' spawn: ' + toStr(timer.getTime()) + '/' + toStr(maxWait), point(10, actionBar.y1 - 15), clRed);         // Too easy haha
       {$ENDIF}
     end else
     begin
-      {$IFDEF SMART}smartImage.clear();{$ENDIF}
+      {$IFDEF SMART}smartImage.clearArea(mainScreen.getBounds);{$ENDIF}
       timer.start();
       if waitForOre(self, 150, (self.maxWait * 1000) + random(6000)) then FailTimer.start();
     end;
@@ -315,9 +357,9 @@ begin
     closePopup();
   until tabBackpack.isFull() or (fiveTimer.getTime() > 360000) or (timer.getTime() > maxWait);
 
-  if (not players[currentPlayer].booleans[Ord(B_FILLED)]) then
-    if (tabBackpack.countBitmap(Coal.bitmap, 15) > 0) then
-      if useCoalBag(['ill']) then goto startMine; // Start mining again if filled coal bag
+  if (not CoalBag.isFull()) then
+    if (tabBackpack.countBitmap(Coal.bitmap, 18) > 0) then
+      if CoalBag.Interact(True) then goto startMine; // Start mining again if filled coal bag
 
 end;
 
@@ -330,9 +372,8 @@ var
 begin
   if not isLoggedIn() then exit();
 
-  if players[currentPlayer].booleans[Ord(B_BAG)] then
-    slots.deleteIndex(getCoalBagSlot() - 1);  // To remove the coalbag slot from
-                                              // the array so we don't deposit it
+  if CoalBag.isActive then slots.deleteIndex(CoalBag.getSlot() - 1);  // To remove the coalbag slot from
+                                                                      // the array so we don't deposit it
   timer.start();
 
   players[currentPlayer].integers[Ord(I_SILVER)] += tabBackpack.countBitmap(Silver.bitmap, 18);
@@ -356,7 +397,7 @@ begin
 
     if (depositBox.count() > 0) then
     repeat
-      if not players[currentPlayer].booleans[Ord(B_BAG)] then
+      if not CoalBag.isActive then
         depositBox.quickDeposit(QUICK_DEPOSITBOX_INVENTORY)
       else
         depositBox.deposit(slots);
@@ -366,9 +407,9 @@ begin
 
     depositBox.close();
 
-    if players[currentPlayer].booleans[Ord(B_FILLED)] then
-      if useCoalBag(['raw-many']) then
-        goto startDeposit;  // Go back to the top to deposit the second load
+    if (not CoalBag.isEmpty()) then
+      if CoalBag.Interact(False) then
+        goto startDeposit;  // Go back to the top to deposit the 2nd (& 3rd) load
 
     players[currentPlayer].integers[Ord(I_LOADS)] += 1;
   end;
@@ -394,7 +435,7 @@ begin
   writeLn(PadR('| Coal: ' + toStr(players[currentPlayer].integers[Ord(I_COAL)]), 42) + '|');
   writeLn(PadR('| Mithril: ' + toStr(players[currentPlayer].integers[Ord(I_MITHRIL)]), 42) + '|');
   writeLn(PadR('| Loads Done: ' + toStr(players[currentPlayer].integers[Ord(I_LOADS)]), 42) + '|');
-  writeLn(PadR('| Coal bag: ' + toStr(players[currentPlayer].booleans[Ord(B_BAG)]), 42) + '|');
+  writeLn(PadR('| Coal bag: ' + toStr(CoalBag.isActive), 42) + '|');
   writeLn(PadR('| Break in: ' + msToTime(players[currentPlayer].integers[Ord(I_BREAK)] - players[currentPlayer].worked.getTime(), TIME_ABBREV), 42) + '|');
   writeLn('|=========================================|');
 end;
@@ -414,7 +455,7 @@ begin
   end;
         // Two lines of hacky antiban to tear botwatch to shreds and keep the noobs happy
   if random(8) = 0 then hoverSkill(SKILL_MINING);
-  if players[currentPlayer].booleans[Ord(B_BAG)] and (random(15) = 0) then tabBackpack.dragSlot(getCoalBagSlot(), random(28) + 1);
+  if CoalBag.isActive and (random(15) = 0) then tabBackpack.dragSlot(CoalBag.getSlot(), random(28) + 1);
 
   progressReport();
   Stats.Send();
